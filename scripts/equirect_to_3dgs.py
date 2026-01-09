@@ -5,7 +5,7 @@ Convert equirectangular 360 video to 3D Gaussian Splatting model using Depth Any
 This script:
 1. Extracts frames from equirectangular video
 2. Converts each frame to cubemap faces (front, back, left, right, up; optionally down)
-3. Processes cubemap faces with DA3 for depth estimation and 3DGS
+3. Processes cubemap faces with DA3-Streaming for proper chunk alignment and loop closure
 
 Usage:
     python scripts/equirect_to_3dgs.py \
@@ -26,10 +26,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 from tqdm import tqdm
-
-from depth_anything_3.api import DepthAnything3
 
 
 # Cubemap face configurations
@@ -52,9 +49,9 @@ def extract_frames_from_video(
     """Extract frames from video at specified FPS."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # Build ffmpeg command
     cmd = [
         "ffmpeg", "-y",
+        "-loglevel", "error",
         "-i", video_path,
         "-vf", f"fps={fps}",
     ]
@@ -88,9 +85,6 @@ def equirect_to_cubemap_ffmpeg(
     yaw = config["yaw"]
     pitch = config["pitch"]
 
-    # Use v360 filter to extract perspective view
-    # e = equirectangular input
-    # flat = rectilinear/perspective output
     cmd = [
         "ffmpeg", "-y",
         "-loglevel", "error",
@@ -111,16 +105,17 @@ def convert_frames_to_cubemap(
     output_dir: str,
     faces: list,
     cube_size: int = 1024,
-) -> dict:
-    """Convert equirectangular frames to cubemap faces."""
+) -> int:
+    """Convert equirectangular frames to cubemap faces.
+
+    Returns total number of images created.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
-    frames_data = {}
-
+    total_images = 0
     for frame_path in tqdm(frame_paths, desc="Converting to cubemap"):
         frame_name = os.path.basename(frame_path)
         frame_num = int(re.search(r'(\d+)', frame_name).group(1))
-        frames_data[frame_num] = {}
 
         for face in faces:
             face_idx = FACE_CONFIGS[face]["index"]
@@ -128,134 +123,194 @@ def convert_frames_to_cubemap(
             output_path = os.path.join(output_dir, output_filename)
 
             if equirect_to_cubemap_ffmpeg(frame_path, output_path, face, cube_size):
-                frames_data[frame_num][face] = output_path
-            else:
-                print(f"Warning: Failed to convert {frame_path} face {face}")
+                total_images += 1
 
-    return frames_data
+    return total_images
 
 
-def merge_ply_files(ply_files: list, output_path: str):
-    """Merge multiple PLY files into one."""
-    from plyfile import PlyData, PlyElement
+def check_da3_streaming_weights(da3_streaming_dir: str) -> bool:
+    """Check if DA3-streaming weights are downloaded."""
+    weights_dir = os.path.join(da3_streaming_dir, "weights")
+    required_files = ["model.safetensors", "config.json", "dino_salad.ckpt"]
 
-    all_vertices = []
-
-    for ply_file in ply_files:
-        if not os.path.exists(ply_file):
-            continue
-        plydata = PlyData.read(ply_file)
-        vertices = plydata['vertex']
-        all_vertices.append(vertices.data)
-
-    if not all_vertices:
-        print("No PLY files to merge!")
-        return
-
-    merged_data = np.concatenate(all_vertices)
-    merged_vertices = PlyElement.describe(merged_data, 'vertex')
-    merged_ply = PlyData([merged_vertices])
-    merged_ply.write(output_path)
-    print(f"Merged {len(all_vertices)} PLY files -> {output_path}")
+    for f in required_files:
+        if not os.path.exists(os.path.join(weights_dir, f)):
+            return False
+    return True
 
 
-def merge_glb_point_clouds(glb_files: list, output_path: str):
-    """Merge multiple GLB point cloud files."""
-    import trimesh
+def download_da3_streaming_weights(da3_streaming_dir: str):
+    """Download DA3-streaming weights if not present."""
+    script_path = os.path.join(da3_streaming_dir, "scripts", "download_weights.sh")
 
-    all_points = []
-    all_colors = []
-
-    for glb_file in glb_files:
-        if not os.path.exists(glb_file):
-            continue
-        try:
-            scene = trimesh.load(glb_file)
-            if isinstance(scene, trimesh.Scene):
-                for geometry in scene.geometry.values():
-                    if hasattr(geometry, 'vertices'):
-                        all_points.append(geometry.vertices)
-                        if hasattr(geometry, 'visual') and hasattr(geometry.visual, 'vertex_colors'):
-                            all_colors.append(geometry.visual.vertex_colors[:, :3])
-            elif hasattr(scene, 'vertices'):
-                all_points.append(scene.vertices)
-        except Exception as e:
-            print(f"Warning: Could not load {glb_file}: {e}")
-            continue
-
-    if not all_points:
-        print("No point clouds to merge!")
-        return
-
-    merged_points = np.concatenate(all_points)
-
-    if all_colors and len(all_colors) == len(all_points):
-        merged_colors = np.concatenate(all_colors)
-        cloud = trimesh.PointCloud(merged_points, colors=merged_colors)
+    if os.path.exists(script_path):
+        print("Downloading DA3-streaming weights...")
+        result = subprocess.run(
+            ["bash", script_path],
+            cwd=da3_streaming_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"Warning: Weight download may have failed: {result.stderr}")
     else:
-        cloud = trimesh.PointCloud(merged_points)
-
-    cloud.export(output_path)
-    print(f"Merged {len(all_points)} point clouds -> {output_path} ({len(merged_points)} points)")
+        print(f"Warning: Download script not found at {script_path}")
+        print("Please download weights manually following da3_streaming/README.md")
 
 
-def process_chunk(
-    model,
-    image_paths: list,
-    output_dir: str,
-    chunk_idx: int,
-    process_res: int,
-    model_supports_gs: bool,
+def create_streaming_config(
+    config_path: str,
+    chunk_size: int = 60,
+    overlap: int = 30,
+    loop_enable: bool = True,
 ):
-    """Process a single chunk of images."""
-    chunk_dir = os.path.join(output_dir, f"chunk_{chunk_idx:04d}")
-    os.makedirs(chunk_dir, exist_ok=True)
+    """Create a config file for DA3-streaming."""
+    config = {
+        "Weights": {
+            "DA3": "./weights/model.safetensors",
+            "DA3_CONFIG": "./weights/config.json",
+            "SALAD": "./weights/dino_salad.ckpt",
+        },
+        "Model": {
+            "chunk_size": chunk_size,
+            "overlap": overlap,
+            "loop_chunk_size": 20,
+            "loop_enable": loop_enable,
+            "useDBoW": False,
+            "delete_temp_files": True,
+            "align_lib": "triton",
+            "align_method": "sim3",
+            "scale_compute_method": "auto",
+            "align_type": "dense",
+            "ref_view_strategy": "saddle_balanced",
+            "ref_view_strategy_loop": "saddle_balanced",
+            "depth_threshold": 15.0,
+            "save_depth_conf_result": False,
+            "save_debug_info": False,
+            "Sparse_Align": {
+                "keypoint_select": "orb",
+                "keypoint_num": 5000,
+            },
+            "IRLS": {
+                "delta": 0.1,
+                "max_iters": 5,
+                "tol": 1e-9,
+            },
+            "Pointcloud_Save": {
+                "sample_ratio": 0.015,
+                "conf_threshold_coef": 0.75,
+            },
+        },
+        "Loop": {
+            "SALAD": {
+                "image_size": [336, 336],
+                "batch_size": 32,
+                "similarity_threshold": 0.85,
+                "top_k": 5,
+                "use_nms": True,
+                "nms_threshold": 25,
+            },
+            "SIM3_Optimizer": {
+                "lang_version": "cpp",
+                "max_iterations": 30,
+                "lambda_init": 1e-6,
+            },
+        },
+    }
 
-    if model_supports_gs:
-        export_format = "npz-glb-gs_ply"
-        export_kwargs = {}
-    else:
-        export_format = "npz-glb"
-        export_kwargs = {}
+    import yaml
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False)
 
-    prediction = model.inference(
-        image=image_paths,
-        infer_gs=model_supports_gs,
-        use_ray_pose=True,
-        process_res=process_res,
-        export_dir=chunk_dir,
-        export_format=export_format,
-        export_kwargs=export_kwargs,
-        conf_thresh_percentile=30.0,
-        num_max_points=500000,
+    return config_path
+
+
+def run_da3_streaming(
+    image_dir: str,
+    output_dir: str,
+    da3_streaming_dir: str,
+    config_path: str = None,
+    chunk_size: int = 60,
+    overlap: int = 30,
+):
+    """Run DA3-streaming on the cubemap images."""
+
+    # Check weights
+    if not check_da3_streaming_weights(da3_streaming_dir):
+        download_da3_streaming_weights(da3_streaming_dir)
+
+        if not check_da3_streaming_weights(da3_streaming_dir):
+            raise RuntimeError(
+                "DA3-streaming weights not found. Please download them manually:\n"
+                f"  cd {da3_streaming_dir} && bash scripts/download_weights.sh"
+            )
+
+    # Create config if not provided
+    if config_path is None:
+        config_path = os.path.join(output_dir, "streaming_config.yaml")
+        create_streaming_config(config_path, chunk_size, overlap)
+
+    # Run DA3-streaming
+    script_path = os.path.join(da3_streaming_dir, "da3_streaming.py")
+
+    cmd = [
+        sys.executable, script_path,
+        "--image_dir", image_dir,
+        "--output_dir", output_dir,
+        "--config", config_path,
+    ]
+
+    print(f"\nRunning DA3-streaming...")
+    print(f"  Image dir: {image_dir}")
+    print(f"  Output dir: {output_dir}")
+    print(f"  Config: {config_path}")
+
+    # Run with real-time output
+    process = subprocess.Popen(
+        cmd,
+        cwd=da3_streaming_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
 
-    return {
-        "chunk_dir": chunk_dir,
-        "glb_path": os.path.join(chunk_dir, "scene.glb"),
-        "ply_path": os.path.join(chunk_dir, "gs_ply", "0000.ply") if model_supports_gs else None,
-        "num_images": len(image_paths),
-    }
+    for line in process.stdout:
+        print(line, end='')
+
+    process.wait()
+
+    if process.returncode != 0:
+        raise RuntimeError(f"DA3-streaming failed with return code {process.returncode}")
+
+    return output_dir
 
 
 def process_equirect_to_3dgs(
     input_path: str,
     output_dir: str,
-    model_name: str = "depth-anything/DA3-GIANT-1.1",
     faces: list = None,
     fps: float = 1.0,
     max_frames: int = None,
     cube_size: int = 1024,
-    process_res: int = 378,
-    chunk_size: int = 3,
-    overlap: int = 1,
+    chunk_size: int = 60,
+    overlap: int = 30,
+    loop_enable: bool = True,
     keep_temp: bool = False,
 ):
-    """Process equirectangular video to 3DGS model."""
+    """Process equirectangular video to 3DGS model using DA3-streaming."""
 
     if faces is None:
         # Default: exclude bottom (usually captures camera operator)
         faces = ["front", "back", "left", "right", "up"]
+
+    # Find DA3-streaming directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    da3_streaming_dir = os.path.join(project_root, "da3_streaming")
+
+    if not os.path.exists(da3_streaming_dir):
+        raise RuntimeError(f"DA3-streaming directory not found: {da3_streaming_dir}")
 
     # Create output directories
     os.makedirs(output_dir, exist_ok=True)
@@ -264,9 +319,9 @@ def process_equirect_to_3dgs(
     cubemap_dir = os.path.join(temp_dir, "cubemap")
 
     # Step 1: Extract frames from video
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print("Step 1: Extracting frames from video")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
     frame_paths = extract_frames_from_video(
         input_path, frames_dir, fps=fps, max_frames=max_frames
     )
@@ -276,107 +331,63 @@ def process_equirect_to_3dgs(
         return
 
     # Step 2: Convert to cubemap
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print("Step 2: Converting to cubemap faces")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
     print(f"Faces: {faces}")
     print(f"Cube size: {cube_size}x{cube_size}")
 
-    frames_data = convert_frames_to_cubemap(
+    total_images = convert_frames_to_cubemap(
         frame_paths, cubemap_dir, faces, cube_size
     )
-
-    # Build image list
-    image_paths = []
-    for frame_num in sorted(frames_data.keys()):
-        for face in faces:
-            if face in frames_data[frame_num]:
-                image_paths.append(frames_data[frame_num][face])
-
-    total_images = len(image_paths)
     print(f"Total cubemap images: {total_images}")
 
-    # Step 3: Load model
-    print(f"\n{'='*50}")
-    print("Step 3: Loading DA3 model")
-    print(f"{'='*50}")
-    print(f"Model: {model_name}")
+    # Step 3: Run DA3-streaming
+    print(f"\n{'='*60}")
+    print("Step 3: Running DA3-streaming (with Sim3 alignment & loop closure)")
+    print(f"{'='*60}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DepthAnything3.from_pretrained(model_name)
-    model = model.to(device)
-    model.eval()
-    print(f"Model loaded on {device}")
+    streaming_output = os.path.join(output_dir, "streaming_output")
 
-    model_supports_gs = "GIANT" in model_name.upper()
-    if not model_supports_gs:
-        print(f"Note: Model does not support Gaussian splatting. Exporting point cloud only.")
+    # Create config
+    config_path = os.path.join(output_dir, "streaming_config.yaml")
+    create_streaming_config(
+        config_path,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        loop_enable=loop_enable,
+    )
 
-    # Step 4: Process in chunks
-    print(f"\n{'='*50}")
-    print("Step 4: Processing with DA3")
-    print(f"{'='*50}")
+    run_da3_streaming(
+        image_dir=cubemap_dir,
+        output_dir=streaming_output,
+        da3_streaming_dir=da3_streaming_dir,
+        config_path=config_path,
+        chunk_size=chunk_size,
+        overlap=overlap,
+    )
 
-    # Calculate chunks
-    images_per_frame = len(faces)
-    images_per_chunk = chunk_size * images_per_frame
-    overlap_images = overlap * images_per_frame
+    # Step 4: Copy final outputs to main output dir
+    print(f"\n{'='*60}")
+    print("Step 4: Organizing outputs")
+    print(f"{'='*60}")
 
-    chunks = []
-    start = 0
-    while start < total_images:
-        end = min(start + images_per_chunk, total_images)
-        chunks.append((start, end))
-        start = end - overlap_images
-        if start >= total_images - overlap_images:
-            break
+    # Copy main outputs
+    pcd_src = os.path.join(streaming_output, "pcd", "combined_pcd.ply")
+    poses_src = os.path.join(streaming_output, "camera_poses.txt")
+    intrinsics_src = os.path.join(streaming_output, "intrinsic.txt")
 
-    print(f"Processing {len(chunks)} chunks (chunk_size={chunk_size} frames)")
+    if os.path.exists(pcd_src):
+        shutil.copy(pcd_src, os.path.join(output_dir, "combined_pcd.ply"))
+        print(f"  Point cloud: {output_dir}/combined_pcd.ply")
 
-    chunk_results = []
-    for i, (start, end) in enumerate(tqdm(chunks, desc="Processing chunks")):
-        chunk_images = image_paths[start:end]
-        print(f"\nChunk {i+1}/{len(chunks)}: {len(chunk_images)} images")
+    if os.path.exists(poses_src):
+        shutil.copy(poses_src, os.path.join(output_dir, "camera_poses.txt"))
+        print(f"  Camera poses: {output_dir}/camera_poses.txt")
 
-        try:
-            result = process_chunk(
-                model=model,
-                image_paths=chunk_images,
-                output_dir=output_dir,
-                chunk_idx=i,
-                process_res=process_res,
-                model_supports_gs=model_supports_gs,
-            )
-            chunk_results.append(result)
-            torch.cuda.empty_cache()
-
-        except torch.cuda.OutOfMemoryError:
-            print(f"  Warning: OOM on chunk {i}, skipping...")
-            torch.cuda.empty_cache()
-            continue
-        except Exception as e:
-            print(f"  Warning: Error on chunk {i}: {e}")
-            continue
-
-    print(f"\nSuccessfully processed {len(chunk_results)}/{len(chunks)} chunks")
-
-    # Step 5: Merge results
-    print(f"\n{'='*50}")
-    print("Step 5: Merging results")
-    print(f"{'='*50}")
-
-    glb_files = [r["glb_path"] for r in chunk_results if r["glb_path"]]
-    if glb_files:
-        merged_glb_path = os.path.join(output_dir, "scene_merged.glb")
-        merge_glb_point_clouds(glb_files, merged_glb_path)
-
-    if model_supports_gs:
-        ply_files = [r["ply_path"] for r in chunk_results if r["ply_path"]]
-        if ply_files:
-            merged_ply_dir = os.path.join(output_dir, "gs_ply_merged")
-            os.makedirs(merged_ply_dir, exist_ok=True)
-            merged_ply_path = os.path.join(merged_ply_dir, "merged.ply")
-            merge_ply_files(ply_files, merged_ply_path)
+    if os.path.exists(intrinsics_src):
+        shutil.copy(intrinsics_src, os.path.join(output_dir, "intrinsic.txt"))
+        print(f"  Intrinsics: {output_dir}/intrinsic.txt")
 
     # Clean up temp files
     if not keep_temp:
@@ -391,44 +402,42 @@ def process_equirect_to_3dgs(
         "cube_size": cube_size,
         "num_frames": len(frame_paths),
         "num_images": total_images,
-        "process_res": process_res,
-        "model_name": model_name,
         "chunk_size": chunk_size,
         "overlap": overlap,
-        "num_chunks": len(chunks),
-        "successful_chunks": len(chunk_results),
-        "model_supports_gs": model_supports_gs,
+        "loop_enable": loop_enable,
+        "method": "da3_streaming",
     }
 
     with open(os.path.join(output_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print("Results saved to:")
-    print(f"  - Point cloud: {output_dir}/scene_merged.glb")
-    if model_supports_gs:
-        print(f"  - Gaussian PLY: {output_dir}/gs_ply_merged/merged.ply")
-    print(f"  - Chunks: {output_dir}/chunk_*/")
+    print(f"  - Point cloud: {output_dir}/combined_pcd.ply")
+    print(f"  - Camera poses: {output_dir}/camera_poses.txt")
+    print(f"  - Intrinsics: {output_dir}/intrinsic.txt")
     print(f"  - Metadata: {output_dir}/metadata.json")
-    print(f"{'='*50}")
-
-    return chunk_results
+    print(f"  - Streaming output: {streaming_output}/")
+    print(f"{'='*60}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert equirectangular 360 video to 3DGS",
+        description="Convert equirectangular 360 video to aligned 3D point cloud using DA3-streaming",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     # Basic usage
-    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output/3dgs
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output
 
     # Higher quality with more frames
-    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output/3dgs --fps 2.0 --cube-size 1024
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --fps 2.0 --cube-size 1024
 
     # Quick test
-    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output/test --fps 0.5 --max-frames 10
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --fps 0.5 --max-frames 30
+
+    # Disable loop closure for faster processing
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --no-loop
         """
     )
     parser.add_argument(
@@ -439,12 +448,7 @@ Examples:
     parser.add_argument(
         "--output-dir", "-o",
         default="./output/equirect_3dgs",
-        help="Output directory for 3DGS model"
-    )
-    parser.add_argument(
-        "--model",
-        default="depth-anything/DA3-GIANT-1.1",
-        help="DA3 model (DA3-GIANT-1.1 for GS, DA3-LARGE-1.1 for point cloud only)"
+        help="Output directory"
     )
     parser.add_argument(
         "--faces",
@@ -470,22 +474,21 @@ Examples:
         help="Cubemap face size in pixels (default: 1024)"
     )
     parser.add_argument(
-        "--process-res",
-        type=int,
-        default=378,
-        help="DA3 processing resolution (default: 378)"
-    )
-    parser.add_argument(
         "--chunk-size",
         type=int,
-        default=3,
-        help="Frames per chunk (default: 3)"
+        default=60,
+        help="DA3-streaming chunk size (default: 60)"
     )
     parser.add_argument(
         "--overlap",
         type=int,
-        default=1,
-        help="Overlapping frames between chunks (default: 1)"
+        default=30,
+        help="Overlap between chunks (default: 30, should be ~half of chunk-size)"
+    )
+    parser.add_argument(
+        "--no-loop",
+        action="store_true",
+        help="Disable loop closure detection (faster but less accurate)"
     )
     parser.add_argument(
         "--keep-temp",
@@ -500,14 +503,13 @@ Examples:
     process_equirect_to_3dgs(
         input_path=args.input,
         output_dir=args.output_dir,
-        model_name=args.model,
         faces=faces,
         fps=args.fps,
         max_frames=args.max_frames,
         cube_size=args.cube_size,
-        process_res=args.process_res,
         chunk_size=args.chunk_size,
         overlap=args.overlap,
+        loop_enable=not args.no_loop,
         keep_temp=args.keep_temp,
     )
 

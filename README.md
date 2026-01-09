@@ -207,10 +207,10 @@ Model = create_object(load_config("path/to/new/config"))
 
 ### 🌐 360 Video Processing
 
-Process equirectangular 360 videos directly into 3D Gaussian Splatting models:
+Process equirectangular 360 videos directly into aligned 3D point clouds using [DA3-Streaming](da3_streaming/README.md):
 
 ```bash
-# Basic usage - equirectangular video to 3DGS
+# Basic usage - equirectangular video to aligned point cloud
 python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
     -o ./output/3dgs \
@@ -222,7 +222,13 @@ python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
     -o ./output/test \
     --fps 0.5 \
-    --max-frames 10
+    --max-frames 30
+
+# Disable loop closure for faster processing
+python scripts/equirect_to_3dgs.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output/fast \
+    --no-loop
 ```
 
 **Options:**
@@ -231,14 +237,21 @@ python scripts/equirect_to_3dgs.py \
 | `--fps` | 1.0 | Frame extraction rate from video |
 | `--cube-size` | 1024 | Cubemap face size in pixels |
 | `--faces` | front,back,left,right,up | Cubemap faces to process (excludes bottom by default) |
-| `--chunk-size` | 3 | Frames per processing chunk (for GPU memory management) |
-| `--process-res` | 378 | DA3 processing resolution |
+| `--chunk-size` | 60 | DA3-streaming chunk size |
+| `--overlap` | 30 | Overlap between chunks for Sim3 alignment |
+| `--no-loop` | false | Disable loop closure detection |
 | `--keep-temp` | false | Keep extracted frames and cubemap images |
 
 **Outputs:**
-- `scene_merged.glb` - Merged point cloud (viewable in 3D viewers)
-- `gs_ply_merged/merged.ply` - Merged Gaussian splat (for [SuperSplat](https://superspl.at/editor))
-- `chunk_*/` - Individual chunk results
+- `combined_pcd.ply` - Aligned merged point cloud
+- `camera_poses.txt` - Camera poses (4x4 C2W matrices)
+- `intrinsic.txt` - Camera intrinsics (fx, fy, cx, cy)
+- `streaming_output/` - Full DA3-streaming output
+
+**Note:** Requires DA3-streaming weights. Download with:
+```bash
+cd da3_streaming && bash scripts/download_weights.sh
+```
 
 For pre-extracted cubemap images, use `scripts/process_cubemap_to_3dgs.py`:
 
