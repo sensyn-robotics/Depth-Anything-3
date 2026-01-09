@@ -85,6 +85,17 @@ We introduce a new benchmark to rigorously evaluate geometry prediction models o
 
 ### 📦 Installation
 
+#### Using uv (Recommended)
+
+```bash
+git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git
+cd Depth-Anything-3
+uv sync              # Install base dependencies (includes torch)
+uv sync --all-extras # Install all optional dependencies (gradio, gsplat)
+```
+
+#### Using pip
+
 ```bash
 pip install xformers torch\>=2 torchvision
 pip install -e . # Basic
