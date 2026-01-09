@@ -205,7 +205,50 @@ from depth_anything_3.cfg import create_object, load_config
 Model = create_object(load_config("path/to/new/config"))
 ```
 
+### 🌐 360 Video Processing
 
+Process equirectangular 360 videos directly into 3D Gaussian Splatting models:
+
+```bash
+# Basic usage - equirectangular video to 3DGS
+python scripts/equirect_to_3dgs.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output/3dgs \
+    --fps 1.0 \
+    --cube-size 1024
+
+# Quick test with fewer frames
+python scripts/equirect_to_3dgs.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output/test \
+    --fps 0.5 \
+    --max-frames 10
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fps` | 1.0 | Frame extraction rate from video |
+| `--cube-size` | 1024 | Cubemap face size in pixels |
+| `--faces` | front,back,left,right,up | Cubemap faces to process (excludes bottom by default) |
+| `--chunk-size` | 3 | Frames per processing chunk (for GPU memory management) |
+| `--process-res` | 378 | DA3 processing resolution |
+| `--keep-temp` | false | Keep extracted frames and cubemap images |
+
+**Outputs:**
+- `scene_merged.glb` - Merged point cloud (viewable in 3D viewers)
+- `gs_ply_merged/merged.ply` - Merged Gaussian splat (for [SuperSplat](https://superspl.at/editor))
+- `chunk_*/` - Individual chunk results
+
+For pre-extracted cubemap images, use `scripts/process_cubemap_to_3dgs.py`:
+
+```bash
+python scripts/process_cubemap_to_3dgs.py \
+    -i /path/to/cubemap/images \
+    -o ./output/3dgs \
+    --frame-step 5 \
+    --chunk-size 3
+```
 
 ## 📚 Useful Documentation
 
