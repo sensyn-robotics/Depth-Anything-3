@@ -187,7 +187,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             Prediction object containing depth maps and camera parameters
         """
         if "gs" in export_format:
-            assert infer_gs, "must set `infer_gs=True` to perform gs-related export."
+            # Auto-enable infer_gs when gs export is requested
+            infer_gs = True
 
         if "colmap" in export_format:
             assert isinstance(image[0], str), "`image` must be image paths for COLMAP export."
