@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -74,30 +75,69 @@ def extract_frames_from_video(
     return frames
 
 
-def equirect_to_cubemap_ffmpeg(
+def equirect_to_cubemap_all_faces(
     input_path: str,
-    output_path: str,
-    face: str,
+    output_dir: str,
+    frame_num: int,
+    faces: list,
     cube_size: int = 1024,
-) -> bool:
-    """Convert equirectangular image to a single cubemap face using ffmpeg."""
-    config = FACE_CONFIGS[face]
-    yaw = config["yaw"]
-    pitch = config["pitch"]
+) -> list:
+    """Convert equirectangular image to all cubemap faces in a single ffmpeg call.
+
+    Uses filter_complex to decode input once and output all faces simultaneously.
+    This is ~5x faster than calling ffmpeg separately for each face.
+    """
+    # Build filter_complex for all faces at once
+    filter_parts = []
+    output_maps = []
+    output_paths = []
+
+    for i, face in enumerate(faces):
+        config = FACE_CONFIGS[face]
+        yaw = config["yaw"]
+        pitch = config["pitch"]
+        face_idx = config["index"]
+
+        output_filename = f"{frame_num:06d}_{face_idx}_{face}.png"
+        output_path = os.path.join(output_dir, output_filename)
+        output_paths.append(output_path)
+
+        # Create filter for this face
+        filter_parts.append(
+            f"[0:v]v360=e:flat:yaw={yaw}:pitch={pitch}:h_fov=90:v_fov=90:w={cube_size}:h={cube_size}[face{i}]"
+        )
+        output_maps.extend(["-map", f"[face{i}]", output_path])
+
+    filter_complex = ";".join(filter_parts)
 
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg",
         "-loglevel", "error",
         "-i", input_path,
-        "-vf", f"v360=e:flat:yaw={yaw}:pitch={pitch}:h_fov=90:v_fov=90:w={cube_size}:h={cube_size}",
-        "-frames:v", "1",
-        output_path,
-    ]
+        "-filter_complex", filter_complex,
+        "-y",
+    ] + output_maps
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 and result.stderr:
-        print(f"  FFmpeg error for {face}: {result.stderr.strip()}")
-    return result.returncode == 0
+        print(f"  FFmpeg error: {result.stderr.strip()}")
+        return []
+
+    return output_paths
+
+
+def process_single_frame(args) -> tuple:
+    """Process a single frame to cubemap (for parallel execution)."""
+    frame_path, output_dir, faces, cube_size, frame_num = args
+
+    try:
+        output_paths = equirect_to_cubemap_all_faces(
+            frame_path, output_dir, frame_num, faces, cube_size
+        )
+        return (frame_num, output_paths)
+    except Exception as e:
+        print(f"  Warning: Failed to process frame {frame_num}: {e}")
+        return (frame_num, [])
 
 
 def convert_frames_to_cubemap(
@@ -105,25 +145,42 @@ def convert_frames_to_cubemap(
     output_dir: str,
     faces: list,
     cube_size: int = 1024,
+    max_workers: int = None,
 ) -> int:
-    """Convert equirectangular frames to cubemap faces.
+    """Convert equirectangular frames to cubemap faces with parallel processing.
+
+    Optimizations:
+    1. Single-decode multi-output: Each frame decoded once, all faces output simultaneously
+    2. Parallel processing: Multiple frames processed concurrently
 
     Returns total number of images created.
     """
+    import multiprocessing
+
     os.makedirs(output_dir, exist_ok=True)
 
-    total_images = 0
-    for frame_path in tqdm(frame_paths, desc="Converting to cubemap"):
+    # Auto-detect worker count (cap at 8 to avoid overwhelming system)
+    if max_workers is None:
+        max_workers = min(multiprocessing.cpu_count(), 8)
+
+    # Prepare task arguments
+    task_args = []
+    for frame_path in frame_paths:
         frame_name = os.path.basename(frame_path)
         frame_num = int(re.search(r'(\d+)', frame_name).group(1))
+        task_args.append((frame_path, output_dir, faces, cube_size, frame_num))
 
-        for face in faces:
-            face_idx = FACE_CONFIGS[face]["index"]
-            output_filename = f"{frame_num:06d}_{face_idx}_{face}.png"
-            output_path = os.path.join(output_dir, output_filename)
+    total_images = 0
 
-            if equirect_to_cubemap_ffmpeg(frame_path, output_path, face, cube_size):
-                total_images += 1
+    # Process frames in parallel with progress bar
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_single_frame, args): args[4] for args in task_args}
+
+        with tqdm(total=len(frame_paths), desc=f"Converting to cubemap ({max_workers} workers)") as pbar:
+            for future in as_completed(futures):
+                frame_num, output_paths = future.result()
+                total_images += len(output_paths)
+                pbar.update(1)
 
     return total_images
 
@@ -235,6 +292,11 @@ def run_da3_streaming(
 ):
     """Run DA3-streaming on the cubemap images."""
 
+    # Convert all paths to absolute to avoid cwd issues
+    da3_streaming_dir = os.path.abspath(da3_streaming_dir)
+    image_dir = os.path.abspath(image_dir)
+    output_dir = os.path.abspath(output_dir)
+
     # Check weights
     if not check_da3_streaming_weights(da3_streaming_dir):
         download_da3_streaming_weights(da3_streaming_dir)
@@ -249,9 +311,10 @@ def run_da3_streaming(
     if config_path is None:
         config_path = os.path.join(output_dir, "streaming_config.yaml")
         create_streaming_config(config_path, chunk_size, overlap)
+    config_path = os.path.abspath(config_path)
 
-    # Run DA3-streaming
-    script_path = os.path.join(da3_streaming_dir, "da3_streaming.py")
+    # Run DA3-streaming (use just filename since we set cwd)
+    script_path = "da3_streaming.py"
 
     cmd = [
         sys.executable, script_path,
@@ -265,10 +328,15 @@ def run_da3_streaming(
     print(f"  Output dir: {output_dir}")
     print(f"  Config: {config_path}")
 
+    # Set PYTHONPATH to include da3_streaming directory for module imports
+    env = os.environ.copy()
+    env["PYTHONPATH"] = da3_streaming_dir + os.pathsep + env.get("PYTHONPATH", "")
+
     # Run with real-time output
     process = subprocess.Popen(
         cmd,
         cwd=da3_streaming_dir,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -298,7 +366,12 @@ def process_equirect_to_3dgs(
     loop_enable: bool = True,
     keep_temp: bool = False,
 ):
-    """Process equirectangular video to 3DGS model using DA3-streaming."""
+    """Process equirectangular video to 3DGS model using DA3-streaming.
+
+    Supports resuming from intermediate state:
+    - If frames already extracted, skips extraction
+    - If some cubemap faces already converted, only processes remaining frames
+    """
 
     if faces is None:
         # Default: exclude bottom (usually captures camera operator)
@@ -318,28 +391,58 @@ def process_equirect_to_3dgs(
     frames_dir = os.path.join(temp_dir, "frames")
     cubemap_dir = os.path.join(temp_dir, "cubemap")
 
-    # Step 1: Extract frames from video
+    # Step 1: Extract frames from video (with resume support)
     print(f"\n{'='*60}")
     print("Step 1: Extracting frames from video")
     print(f"{'='*60}")
-    frame_paths = extract_frames_from_video(
-        input_path, frames_dir, fps=fps, max_frames=max_frames
-    )
+
+    existing_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+    if existing_frames:
+        print(f"Found {len(existing_frames)} existing frames, skipping extraction")
+        frame_paths = existing_frames
+    else:
+        frame_paths = extract_frames_from_video(
+            input_path, frames_dir, fps=fps, max_frames=max_frames
+        )
 
     if len(frame_paths) == 0:
         print("No frames extracted!")
         return
 
-    # Step 2: Convert to cubemap
+    # Step 2: Convert to cubemap (with resume support)
     print(f"\n{'='*60}")
     print("Step 2: Converting to cubemap faces")
     print(f"{'='*60}")
     print(f"Faces: {faces}")
     print(f"Cube size: {cube_size}x{cube_size}")
 
-    total_images = convert_frames_to_cubemap(
-        frame_paths, cubemap_dir, faces, cube_size
-    )
+    # Check which frames are already converted
+    os.makedirs(cubemap_dir, exist_ok=True)
+    existing_cubemap = os.listdir(cubemap_dir)
+    processed_frames = set()
+    for f in existing_cubemap:
+        match = re.match(r'(\d+)_', f)
+        if match:
+            processed_frames.add(int(match.group(1)))
+
+    # Filter to only unprocessed frames
+    remaining_frames = []
+    for frame_path in frame_paths:
+        frame_num = int(re.search(r'(\d+)', os.path.basename(frame_path)).group(1))
+        if frame_num not in processed_frames:
+            remaining_frames.append(frame_path)
+
+    if remaining_frames:
+        print(f"Already processed: {len(processed_frames)} frames")
+        print(f"Remaining to process: {len(remaining_frames)} frames")
+        new_images = convert_frames_to_cubemap(
+            remaining_frames, cubemap_dir, faces, cube_size
+        )
+        total_images = len(processed_frames) * len(faces) + new_images
+    else:
+        print(f"All {len(frame_paths)} frames already converted, skipping")
+        total_images = len(existing_cubemap)
+
     print(f"Total cubemap images: {total_images}")
 
     # Step 3: Run DA3-streaming
