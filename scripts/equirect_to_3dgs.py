@@ -35,8 +35,8 @@ FACE_CONFIGS = {
     "back":   {"yaw": 180, "pitch": 0,   "index": 1},
     "left":   {"yaw": -90, "pitch": 0,   "index": 2},
     "right":  {"yaw": 90,  "pitch": 0,   "index": 3},
-    "up":     {"yaw": 0,   "pitch": -90, "index": 4},
-    "down":   {"yaw": 0,   "pitch": 90,  "index": 5},
+    "up":     {"yaw": 0,   "pitch": 90,  "index": 4},
+    "down":   {"yaw": 0,   "pitch": -90, "index": 5},
 }
 
 
