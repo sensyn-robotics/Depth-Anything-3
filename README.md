@@ -211,27 +211,27 @@ Process equirectangular 360 videos directly into aligned 3D point clouds using [
 
 ```bash
 # Basic usage - equirectangular video to aligned point cloud
-python scripts/equirect_to_3dgs.py \
+python scripts/equirect_to_pointcloud.py \
     -i /path/to/360_video.mp4 \
     -o ./output/3dgs \
     --fps 1.0 \
     --cube-size 1024
 
 # Low VRAM GPUs (8-12GB) - use --low-memory preset
-python scripts/equirect_to_3dgs.py \
+python scripts/equirect_to_pointcloud.py \
     -i /path/to/360_video.mp4 \
     -o ./output/3dgs \
     --low-memory
 
 # Quick test with fewer frames
-python scripts/equirect_to_3dgs.py \
+python scripts/equirect_to_pointcloud.py \
     -i /path/to/360_video.mp4 \
     -o ./output/test \
     --fps 0.5 \
     --max-frames 30
 
 # Disable loop closure for faster processing
-python scripts/equirect_to_3dgs.py \
+python scripts/equirect_to_pointcloud.py \
     -i /path/to/360_video.mp4 \
     -o ./output/fast \
     --no-loop

@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Convert equirectangular 360 video to 3D Gaussian Splatting model using Depth Anything 3.
+Convert equirectangular 360 video to aligned 3D point cloud using Depth Anything 3.
 
 This script:
 1. Extracts frames from equirectangular video
 2. Converts each frame to cubemap faces (front, back, left, right, up; optionally down)
-3. Processes cubemap faces with DA3-Streaming for proper chunk alignment and loop closure
+3. Processes cubemap faces with DA3-Streaming for depth estimation, Sim3 alignment and loop closure
+
+Outputs:
+- combined_pcd.ply: Aligned merged point cloud
+- camera_poses.txt: Camera poses (4x4 C2W matrices)
+- intrinsic.txt: Camera intrinsics (fx, fy, cx, cy)
 
 Usage:
-    python scripts/equirect_to_3dgs.py \
-        --input /path/to/360_video.mp4 \
-        --output-dir ./output/3dgs \
-        --fps 2.0 \
+    python scripts/equirect_to_pointcloud.py \\
+        --input /path/to/360_video.mp4 \\
+        --output-dir ./output/pointcloud \\
+        --fps 2.0 \\
         --cube-size 1024
 """
 

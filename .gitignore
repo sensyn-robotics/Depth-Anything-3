@@ -35,3 +35,4 @@ temp*.png
 /outputs
 .virtual_documents/
 output/
+da3_streaming/weights/
