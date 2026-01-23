@@ -217,6 +217,12 @@ python scripts/equirect_to_3dgs.py \
     --fps 1.0 \
     --cube-size 1024
 
+# Low VRAM GPUs (8-12GB) - use --low-memory preset
+python scripts/equirect_to_3dgs.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output/3dgs \
+    --low-memory
+
 # Quick test with fewer frames
 python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
@@ -241,6 +247,9 @@ python scripts/equirect_to_3dgs.py \
 | `--overlap` | 30 | Overlap between chunks for Sim3 alignment |
 | `--no-loop` | false | Disable loop closure detection |
 | `--keep-temp` | false | Keep extracted frames and cubemap images |
+| `--low-memory` | false | Preset for 8-12GB VRAM GPUs (sets chunk=10, overlap=5, process-res=336, no-loop) |
+| `--process-res` | 504 | DA3 internal processing resolution (reduce to 336-378 for low VRAM) |
+| `--salad-batch-size` | 32 | SALAD loop closure batch size (reduce to 8-16 for low VRAM) |
 
 **Outputs:**
 - `combined_pcd.ply` - Aligned merged point cloud
