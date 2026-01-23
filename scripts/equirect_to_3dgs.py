@@ -639,7 +639,7 @@ Examples:
 
     args = parser.parse_args()
 
-    # Apply low-memory defaults if enabled
+    # Apply low-memory defaults if enabled, but allow explicit overrides
     chunk_size = args.chunk_size
     overlap = args.overlap
     salad_batch_size = args.salad_batch_size
@@ -648,11 +648,17 @@ Examples:
 
     if args.low_memory:
         print("Low-memory mode enabled: using conservative settings for 8-12GB VRAM GPUs")
-        chunk_size = 10
-        overlap = 5
-        salad_batch_size = 8
-        loop_enable = False
-        process_res = 336  # Tested on 11.6GB GPU
+        # Only apply low-memory values if user didn't explicitly override
+        if args.chunk_size == 60:  # default
+            chunk_size = 10
+        if args.overlap == 30:  # default
+            overlap = 5
+        if args.salad_batch_size == 32:  # default
+            salad_batch_size = 8
+        if not args.no_loop:  # only disable if user didn't explicitly set --no-loop
+            loop_enable = False
+        if args.process_res == 504:  # default
+            process_res = 336  # Tested on 11.6GB GPU
 
     faces = [f.strip() for f in args.faces.split(",")]
 
