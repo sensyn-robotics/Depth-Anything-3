@@ -110,20 +110,34 @@ def load_da3_output(
         raise RuntimeError(f"Failed to load point cloud: {e}")
 
     # Load camera poses (4x4 C2W matrices)
+    # Format: one matrix per line, 16 space-separated values
     print(f"Loading poses from {poses_path}...")
     try:
         poses_data = np.loadtxt(poses_path)
-        num_poses = len(poses_data) // 4
-        output.poses = poses_data.reshape(num_poses, 4, 4)
-        print(f"  Loaded {num_poses} camera poses")
+        if poses_data.ndim == 1:
+            # Single pose
+            output.poses = poses_data.reshape(1, 4, 4)
+        else:
+            # Multiple poses: each row is a flattened 4x4 matrix
+            num_poses = len(poses_data)
+            output.poses = poses_data.reshape(num_poses, 4, 4)
+        print(f"  Loaded {len(output.poses)} camera poses")
     except Exception as e:
         raise RuntimeError(f"Failed to load poses: {e}")
 
     # Load intrinsics (fx, fy, cx, cy)
+    # Format: one set per line (one per image), or single line for shared intrinsics
     print(f"Loading intrinsics from {intrinsics_path}...")
     try:
         intrinsics_data = np.loadtxt(intrinsics_path)
-        output.intrinsics = tuple(intrinsics_data[:4])
+        if intrinsics_data.ndim == 1:
+            # Single shared intrinsics
+            output.intrinsics = tuple(intrinsics_data[:4])
+        else:
+            # Per-image intrinsics - use average for COLMAP (shared camera model)
+            avg_intrinsics = intrinsics_data.mean(axis=0)
+            output.intrinsics = tuple(avg_intrinsics[:4])
+            print(f"  Note: {len(intrinsics_data)} per-image intrinsics found, using average")
         print(f"  Intrinsics: fx={output.intrinsics[0]:.2f}, fy={output.intrinsics[1]:.2f}, "
               f"cx={output.intrinsics[2]:.2f}, cy={output.intrinsics[3]:.2f}")
     except Exception as e:
@@ -343,16 +357,17 @@ def convert_to_colmap_format(
     return colmap_dir
 
 
-def find_gaussian_splatting() -> Optional[str]:
+def find_gaussian_splatting() -> Optional[tuple[str, str]]:
     """Find gaussian-splatting installation.
 
     Returns:
-        Path to gaussian-splatting directory, or None if not found
+        Tuple of (gs_path, python_path) or None if not found
     """
     # Check environment variable
     gs_path = os.environ.get("GAUSSIAN_SPLATTING_PATH")
     if gs_path and os.path.exists(os.path.join(gs_path, "train.py")):
-        return gs_path
+        python_path = _find_gs_python(gs_path)
+        return gs_path, python_path
 
     # Check common locations
     common_paths = [
@@ -363,15 +378,58 @@ def find_gaussian_splatting() -> Optional[str]:
 
     for path in common_paths:
         if os.path.exists(os.path.join(path, "train.py")):
-            return path
+            python_path = _find_gs_python(path)
+            return path, python_path
+
+    # Search home directory (up to 2 levels deep)
+    home_dir = os.path.expanduser("~")
+    for level1 in os.listdir(home_dir):
+        level1_path = os.path.join(home_dir, level1)
+        if not os.path.isdir(level1_path) or level1.startswith('.'):
+            continue
+        # Check ~/*/gaussian-splatting
+        candidate = os.path.join(level1_path, "gaussian-splatting")
+        if os.path.exists(os.path.join(candidate, "train.py")):
+            return candidate, _find_gs_python(candidate)
+        # Check ~/*/*/gaussian-splatting
+        try:
+            for level2 in os.listdir(level1_path):
+                level2_path = os.path.join(level1_path, level2)
+                if not os.path.isdir(level2_path) or level2.startswith('.'):
+                    continue
+                candidate = os.path.join(level2_path, "gaussian-splatting")
+                if os.path.exists(os.path.join(candidate, "train.py")):
+                    return candidate, _find_gs_python(candidate)
+        except PermissionError:
+            continue
 
     return None
+
+
+def _find_gs_python(gs_path: str) -> str:
+    """Find the Python interpreter for gaussian-splatting.
+
+    Checks for venv/uv virtual environment, falls back to system Python.
+    """
+    # Check for uv/venv virtual environment
+    venv_python = os.path.join(gs_path, ".venv", "bin", "python")
+    if os.path.exists(venv_python):
+        return venv_python
+
+    # Check for standard venv
+    venv_python = os.path.join(gs_path, "venv", "bin", "python")
+    if os.path.exists(venv_python):
+        return venv_python
+
+    # Fall back to system Python
+    return sys.executable
 
 
 def train_gaussian_splatting(
     colmap_dir: str,
     output_dir: str,
     iterations: int = 30000,
+    resolution: int = -1,
     force: bool = False,
 ) -> str:
     """Train 3D Gaussian Splatting model.
@@ -380,6 +438,7 @@ def train_gaussian_splatting(
         colmap_dir: Path to COLMAP format data
         output_dir: Output directory for trained model
         iterations: Number of training iterations
+        resolution: Image resolution for training (-1 for original, or target width like 512)
         force: Force retraining even if model exists
 
     Returns:
@@ -398,8 +457,8 @@ def train_gaussian_splatting(
         return model_dir
 
     # Find gaussian-splatting
-    gs_path = find_gaussian_splatting()
-    if gs_path is None:
+    gs_result = find_gaussian_splatting()
+    if gs_result is None:
         print("\nWarning: gaussian-splatting not found!")
         print("To train 3DGS, either:")
         print("  1. Set GAUSSIAN_SPLATTING_PATH environment variable")
@@ -409,20 +468,28 @@ def train_gaussian_splatting(
         print(f"  {colmap_dir}")
         return None
 
+    gs_path, python_path = gs_result
+
     print(f"\nTraining 3D Gaussian Splatting...")
     print(f"  Using: {gs_path}")
+    print(f"  Python: {python_path}")
     print(f"  Iterations: {iterations}")
+    if resolution > 0:
+        print(f"  Resolution: {resolution}")
 
     os.makedirs(model_dir, exist_ok=True)
 
     # Run training
     cmd = [
-        sys.executable,
+        python_path,
         os.path.join(gs_path, "train.py"),
         "-s", colmap_dir,
         "-m", model_dir,
         "--iterations", str(iterations),
     ]
+
+    if resolution > 0:
+        cmd.extend(["--resolution", str(resolution)])
 
     print(f"  Command: {' '.join(cmd)}")
 
@@ -452,6 +519,7 @@ def process_pointcloud_to_3dgs(
     images_dir: str,
     output_dir: str = None,
     iterations: int = 30000,
+    resolution: int = -1,
     force: bool = False,
 ) -> dict:
     """
@@ -464,6 +532,7 @@ def process_pointcloud_to_3dgs(
         images_dir: Directory containing input images
         output_dir: If None, uses {pointcloud_parent}/3dgs/
         iterations: Number of training iterations
+        resolution: Image resolution for training (-1 for original, or target width)
         force: If False, skip completed steps
 
     Returns:
@@ -492,7 +561,7 @@ def process_pointcloud_to_3dgs(
     colmap_dir = convert_to_colmap_format(da3_output, output_dir, force=force)
 
     # Train 3DGS
-    model_dir = train_gaussian_splatting(colmap_dir, output_dir, iterations=iterations, force=force)
+    model_dir = train_gaussian_splatting(colmap_dir, output_dir, iterations=iterations, resolution=resolution, force=force)
 
     # Find final PLY
     final_ply = None
@@ -571,6 +640,12 @@ Environment Variables:
         help="Number of training iterations (default: 30000)"
     )
     parser.add_argument(
+        "--resolution",
+        type=int,
+        default=-1,
+        help="Image resolution for training (-1 for original, or target width like 512 for lower memory)"
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force reprocessing even if outputs exist"
@@ -585,6 +660,7 @@ Environment Variables:
         images_dir=args.images_dir,
         output_dir=args.output,
         iterations=args.iterations,
+        resolution=args.resolution,
         force=args.force,
     )
 
