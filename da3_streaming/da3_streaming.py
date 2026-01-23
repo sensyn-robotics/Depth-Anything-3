@@ -138,6 +138,7 @@ class DA3_Streaming:
         self.overlap_s = 0
         self.overlap_e = self.overlap - self.overlap_s
         self.conf_threshold = 1.5
+        self.process_res = self.config["Model"].get("process_res", 504)
         self.seed = 42
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = (
@@ -270,7 +271,7 @@ class DA3_Streaming:
                 images = chunk_image_paths
                 # images: ['xxx.png', 'xxx.png', ...]
 
-                predictions = self.model.inference(images, ref_view_strategy=ref_view_strategy)
+                predictions = self.model.inference(images, ref_view_strategy=ref_view_strategy, process_res=self.process_res)
 
                 predictions.depth = np.squeeze(predictions.depth)
                 predictions.conf -= 1.0

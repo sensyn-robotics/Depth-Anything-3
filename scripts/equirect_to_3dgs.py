@@ -220,6 +220,8 @@ def create_streaming_config(
     chunk_size: int = 60,
     overlap: int = 30,
     loop_enable: bool = True,
+    salad_batch_size: int = 32,
+    process_res: int = 504,
 ):
     """Create a config file for DA3-streaming."""
     config = {
@@ -233,6 +235,7 @@ def create_streaming_config(
             "overlap": overlap,
             "loop_chunk_size": 20,
             "loop_enable": loop_enable,
+            "process_res": process_res,
             "useDBoW": False,
             "delete_temp_files": True,
             "align_lib": "triton",
@@ -251,7 +254,7 @@ def create_streaming_config(
             "IRLS": {
                 "delta": 0.1,
                 "max_iters": 5,
-                "tol": 1e-9,
+                "tol": "1e-9",
             },
             "Pointcloud_Save": {
                 "sample_ratio": 0.015,
@@ -261,7 +264,7 @@ def create_streaming_config(
         "Loop": {
             "SALAD": {
                 "image_size": [336, 336],
-                "batch_size": 32,
+                "batch_size": salad_batch_size,
                 "similarity_threshold": 0.85,
                 "top_k": 5,
                 "use_nms": True,
@@ -365,6 +368,8 @@ def process_equirect_to_3dgs(
     overlap: int = 30,
     loop_enable: bool = True,
     keep_temp: bool = False,
+    salad_batch_size: int = 32,
+    process_res: int = 504,
 ):
     """Process equirectangular video to 3DGS model using DA3-streaming.
 
@@ -459,6 +464,8 @@ def process_equirect_to_3dgs(
         chunk_size=chunk_size,
         overlap=overlap,
         loop_enable=loop_enable,
+        salad_batch_size=salad_batch_size,
+        process_res=process_res,
     )
 
     run_da3_streaming(
@@ -508,6 +515,8 @@ def process_equirect_to_3dgs(
         "chunk_size": chunk_size,
         "overlap": overlap,
         "loop_enable": loop_enable,
+        "salad_batch_size": salad_batch_size,
+        "process_res": process_res,
         "method": "da3_streaming",
     }
 
@@ -541,6 +550,18 @@ Examples:
 
     # Disable loop closure for faster processing
     python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --no-loop
+
+    # Low VRAM GPU (~8-12GB): use --low-memory preset
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --low-memory --keep-temp
+
+    # Fine-tune memory usage: reduce chunk-size and SALAD batch
+    python scripts/equirect_to_3dgs.py -i video.mp4 -o ./output --chunk-size 30 --salad-batch-size 8
+
+    # OOM troubleshooting order (try each if previous OOMs):
+    #   1. --chunk-size 30 --overlap 15
+    #   2. --no-loop (disables SALAD memory usage)
+    #   3. --salad-batch-size 8 (if loop needed)
+    #   4. --cube-size 768 (last resort, reduces quality)
         """
     )
     parser.add_argument(
@@ -598,8 +619,40 @@ Examples:
         action="store_true",
         help="Keep temporary files (extracted frames, cubemap images)"
     )
+    parser.add_argument(
+        "--salad-batch-size",
+        type=int,
+        default=32,
+        help="SALAD loop closure batch size (default: 32, reduce to 8-16 for low VRAM)"
+    )
+    parser.add_argument(
+        "--low-memory",
+        action="store_true",
+        help="Enable low-memory mode for 8-12GB VRAM GPUs: sets chunk-size=10, overlap=5, process-res=336, disables loop closure"
+    )
+    parser.add_argument(
+        "--process-res",
+        type=int,
+        default=504,
+        help="DA3 internal processing resolution (default: 504, reduce to 336 or 378 for low VRAM GPUs)"
+    )
 
     args = parser.parse_args()
+
+    # Apply low-memory defaults if enabled
+    chunk_size = args.chunk_size
+    overlap = args.overlap
+    salad_batch_size = args.salad_batch_size
+    loop_enable = not args.no_loop
+    process_res = args.process_res
+
+    if args.low_memory:
+        print("Low-memory mode enabled: using conservative settings for 8-12GB VRAM GPUs")
+        chunk_size = 10
+        overlap = 5
+        salad_batch_size = 8
+        loop_enable = False
+        process_res = 336  # Tested on 11.6GB GPU
 
     faces = [f.strip() for f in args.faces.split(",")]
 
@@ -610,10 +663,12 @@ Examples:
         fps=args.fps,
         max_frames=args.max_frames,
         cube_size=args.cube_size,
-        chunk_size=args.chunk_size,
-        overlap=args.overlap,
-        loop_enable=not args.no_loop,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        loop_enable=loop_enable,
         keep_temp=args.keep_temp,
+        salad_batch_size=salad_batch_size,
+        process_res=process_res,
     )
 
 
