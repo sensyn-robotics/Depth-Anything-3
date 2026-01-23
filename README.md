@@ -207,37 +207,88 @@ Model = create_object(load_config("path/to/new/config"))
 
 ### 🌐 360 Video Processing
 
-Process equirectangular 360 videos directly into aligned 3D point clouds using [DA3-Streaming](da3_streaming/README.md):
+Process equirectangular 360 videos into aligned 3D point clouds and optionally train 3D Gaussian Splatting using [DA3-Streaming](da3_streaming/README.md).
+
+#### Modular Scripts
+
+The pipeline is split into modular, reusable scripts with resume support:
+
+```
+scripts/
+├── extract_frames.py          # Video → Frames
+├── frames_to_cubemap.py       # Equirect Frames → Cubemap
+├── cubemap_to_pointcloud.py   # Cubemap → Aligned Point Cloud + Poses
+├── pointcloud_to_3dgs.py      # Point Cloud + Poses → Trained 3DGS
+└── equirect_to_3dgs.py        # All-in-one pipeline
+```
+
+#### All-in-One Pipeline
 
 ```bash
-# Basic usage - equirectangular video to aligned point cloud
-python scripts/equirect_to_pointcloud.py \
+# Basic usage - video to aligned point cloud
+python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
-    -o ./output/3dgs \
-    --fps 1.0 \
-    --cube-size 1024
+    -o ./output
 
-# Low VRAM GPUs (8-12GB) - use --low-memory preset
-python scripts/equirect_to_pointcloud.py \
+# With 3DGS training
+python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
-    -o ./output/3dgs \
+    -o ./output \
+    --train-3dgs
+
+# Low VRAM GPUs (8-12GB)
+python scripts/equirect_to_3dgs.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output \
     --low-memory
 
 # Quick test with fewer frames
-python scripts/equirect_to_pointcloud.py \
+python scripts/equirect_to_3dgs.py \
     -i /path/to/360_video.mp4 \
-    -o ./output/test \
-    --fps 0.5 \
-    --max-frames 30
-
-# Disable loop closure for faster processing
-python scripts/equirect_to_pointcloud.py \
-    -i /path/to/360_video.mp4 \
-    -o ./output/fast \
-    --no-loop
+    -o ./output \
+    --fps 0.5 --max-frames 30 --low-memory
 ```
 
-**Options:**
+#### Individual Scripts
+
+Use individual scripts for more control or to resume from intermediate stages:
+
+```bash
+# Step 1: Extract frames from video
+python scripts/extract_frames.py \
+    -i /path/to/360_video.mp4 \
+    -o ./output/frames \
+    --fps 1.0
+
+# Step 2: Convert to cubemap faces
+python scripts/frames_to_cubemap.py \
+    -i ./output/frames \
+    -o ./output/cubemap \
+    --cube-size 1024
+
+# Step 3: Generate point cloud and poses with DA3-streaming
+python scripts/cubemap_to_pointcloud.py \
+    -i ./output/cubemap \
+    -o ./output/pointcloud
+
+# Step 4: Train 3DGS (requires gaussian-splatting)
+python scripts/pointcloud_to_3dgs.py \
+    -p ./output/pointcloud/combined_pcd.ply \
+    --poses ./output/pointcloud/camera_poses.txt \
+    --intrinsics ./output/pointcloud/intrinsic.txt \
+    --images-dir ./output/cubemap \
+    -o ./output/3dgs
+```
+
+#### Resume Support
+
+All scripts support resuming from intermediate state:
+- Scripts check if outputs already exist before processing
+- Use `--force` to reprocess even if outputs exist
+- Failed or interrupted runs can be resumed by simply re-running the command
+
+#### Options
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--fps` | 1.0 | Frame extraction rate from video |
@@ -246,30 +297,45 @@ python scripts/equirect_to_pointcloud.py \
 | `--chunk-size` | 60 | DA3-streaming chunk size |
 | `--overlap` | 30 | Overlap between chunks for Sim3 alignment |
 | `--no-loop` | false | Disable loop closure detection |
-| `--keep-temp` | false | Keep extracted frames and cubemap images |
-| `--low-memory` | false | Preset for 8-12GB VRAM GPUs (sets chunk=10, overlap=5, process-res=336, no-loop) |
+| `--keep-temp` | false | Keep all intermediate files |
+| `--low-memory` | false | Preset for 8-12GB VRAM GPUs (chunk=10, overlap=5, process-res=336, no-loop) |
 | `--process-res` | 504 | DA3 internal processing resolution (reduce to 336-378 for low VRAM) |
 | `--salad-batch-size` | 32 | SALAD loop closure batch size (reduce to 8-16 for low VRAM) |
+| `--train-3dgs` | false | Train 3D Gaussian Splatting after point cloud generation |
+| `--train-iterations` | 30000 | Number of 3DGS training iterations |
+| `--force` | false | Reprocess all stages even if outputs exist |
 
-**Outputs:**
-- `combined_pcd.ply` - Aligned merged point cloud
-- `camera_poses.txt` - Camera poses (4x4 C2W matrices)
-- `intrinsic.txt` - Camera intrinsics (fx, fy, cx, cy)
-- `streaming_output/` - Full DA3-streaming output
+#### Outputs
 
-**Note:** Requires DA3-streaming weights. Download with:
+```
+output/
+├── frames/                    # Extracted video frames
+├── cubemap/                   # Cubemap face images
+├── pointcloud/
+│   ├── combined_pcd.ply       # Aligned merged point cloud
+│   ├── camera_poses.txt       # Camera poses (4x4 C2W matrices)
+│   ├── intrinsic.txt          # Camera intrinsics (fx, fy, cx, cy)
+│   └── streaming_output/      # Full DA3-streaming output
+├── 3dgs/                      # 3DGS output (if --train-3dgs)
+│   ├── colmap/                # COLMAP format data
+│   └── model/                 # Trained 3DGS model
+└── metadata.json              # Pipeline metadata
+```
+
+#### Requirements
+
+**DA3-streaming weights:**
 ```bash
 cd da3_streaming && bash scripts/download_weights.sh
 ```
 
-For pre-extracted cubemap images, use `scripts/process_cubemap_to_3dgs.py`:
-
+**3DGS training (optional):**
 ```bash
-python scripts/process_cubemap_to_3dgs.py \
-    -i /path/to/cubemap/images \
-    -o ./output/3dgs \
-    --frame-step 5 \
-    --chunk-size 3
+# Set path to gaussian-splatting repository
+export GAUSSIAN_SPLATTING_PATH=/path/to/gaussian-splatting
+
+# Or clone to default location
+git clone https://github.com/graphdeco-inria/gaussian-splatting ~/gaussian-splatting
 ```
 
 ## 📚 Useful Documentation
