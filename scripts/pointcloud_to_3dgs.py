@@ -46,6 +46,7 @@ CAMERA_MODELS = {
 @dataclass
 class DA3StreamingOutput:
     """Container for DA3-streaming output data."""
+
     pointcloud_path: str
     poses_path: str
     intrinsics_path: str
@@ -54,9 +55,9 @@ class DA3StreamingOutput:
     # Loaded data
     points: np.ndarray = None  # [N, 3] XYZ
     colors: np.ndarray = None  # [N, 3] RGB (0-255)
-    poses: np.ndarray = None   # [M, 4, 4] C2W matrices
-    intrinsics: tuple = None   # (fx, fy, cx, cy)
-    image_paths: list = None   # List of image paths
+    poses: np.ndarray = None  # [M, 4, 4] C2W matrices
+    intrinsics: tuple = None  # (fx, fy, cx, cy)
+    image_paths: list = None  # List of image paths
 
 
 def load_da3_output(
@@ -87,21 +88,16 @@ def load_da3_output(
     print(f"Loading point cloud from {pointcloud_path}...")
     try:
         from plyfile import PlyData
+
         plydata = PlyData.read(pointcloud_path)
-        vertices = plydata['vertex']
+        vertices = plydata["vertex"]
 
-        output.points = np.vstack([
-            vertices['x'],
-            vertices['y'],
-            vertices['z']
-        ]).T
+        output.points = np.vstack([vertices["x"], vertices["y"], vertices["z"]]).T
 
-        if 'red' in vertices.data.dtype.names:
-            output.colors = np.vstack([
-                vertices['red'],
-                vertices['green'],
-                vertices['blue']
-            ]).T.astype(np.uint8)
+        if "red" in vertices.data.dtype.names:
+            output.colors = np.vstack(
+                [vertices["red"], vertices["green"], vertices["blue"]]
+            ).T.astype(np.uint8)
         else:
             output.colors = np.full((len(output.points), 3), 128, dtype=np.uint8)
 
@@ -119,8 +115,7 @@ def load_da3_output(
             output.poses = poses_data.reshape(1, 4, 4)
         else:
             # Multiple poses: each row is a flattened 4x4 matrix
-            num_poses = len(poses_data)
-            output.poses = poses_data.reshape(num_poses, 4, 4)
+            output.poses = poses_data.reshape(len(poses_data), 4, 4)
         print(f"  Loaded {len(output.poses)} camera poses")
     except Exception as e:
         raise RuntimeError(f"Failed to load poses: {e}")
@@ -138,8 +133,10 @@ def load_da3_output(
             avg_intrinsics = intrinsics_data.mean(axis=0)
             output.intrinsics = tuple(avg_intrinsics[:4])
             print(f"  Note: {len(intrinsics_data)} per-image intrinsics found, using average")
-        print(f"  Intrinsics: fx={output.intrinsics[0]:.2f}, fy={output.intrinsics[1]:.2f}, "
-              f"cx={output.intrinsics[2]:.2f}, cy={output.intrinsics[3]:.2f}")
+        print(
+            f"  Intrinsics: fx={output.intrinsics[0]:.2f}, fy={output.intrinsics[1]:.2f}, "
+            f"cx={output.intrinsics[2]:.2f}, cy={output.intrinsics[3]:.2f}"
+        )
     except Exception as e:
         raise RuntimeError(f"Failed to load intrinsics: {e}")
 
@@ -153,8 +150,11 @@ def load_da3_output(
     print(f"  Found {len(output.image_paths)} images")
 
     # Verify counts match
+    num_poses = len(output.poses)
     if len(output.image_paths) != num_poses:
-        print(f"  Warning: Number of images ({len(output.image_paths)}) != number of poses ({num_poses})")
+        print(
+            f"  Warning: Number of images ({len(output.image_paths)}) != number of poses ({num_poses})"
+        )
         # Truncate to minimum
         min_count = min(len(output.image_paths), num_poses)
         output.image_paths = output.image_paths[:min_count]
@@ -285,6 +285,7 @@ def convert_to_colmap_format(
 
     # Get image dimensions from first image
     from PIL import Image
+
     with Image.open(da3_output.image_paths[0]) as img:
         width, height = img.size
     print(f"  Image size: {width}x{height}")
@@ -385,7 +386,7 @@ def find_gaussian_splatting() -> Optional[tuple[str, str]]:
     home_dir = os.path.expanduser("~")
     for level1 in os.listdir(home_dir):
         level1_path = os.path.join(home_dir, level1)
-        if not os.path.isdir(level1_path) or level1.startswith('.'):
+        if not os.path.isdir(level1_path) or level1.startswith("."):
             continue
         # Check ~/*/gaussian-splatting
         candidate = os.path.join(level1_path, "gaussian-splatting")
@@ -395,7 +396,7 @@ def find_gaussian_splatting() -> Optional[tuple[str, str]]:
         try:
             for level2 in os.listdir(level1_path):
                 level2_path = os.path.join(level1_path, level2)
-                if not os.path.isdir(level2_path) or level2.startswith('.'):
+                if not os.path.isdir(level2_path) or level2.startswith("."):
                     continue
                 candidate = os.path.join(level2_path, "gaussian-splatting")
                 if os.path.exists(os.path.join(candidate, "train.py")):
@@ -453,7 +454,9 @@ def train_gaussian_splatting(
         - gaussian-splatting has internal checkpoint resume
     """
     model_dir = os.path.join(output_dir, "model")
-    final_ply = os.path.join(model_dir, "point_cloud", f"iteration_{iterations}", "point_cloud.ply")
+    final_ply = os.path.join(
+        model_dir, "point_cloud", f"iteration_{iterations}", "point_cloud.ply"
+    )
 
     if not force and os.path.exists(final_ply):
         print(f"Trained model already exists: {final_ply}")
@@ -476,6 +479,7 @@ def _train_gsplat(colmap_dir, model_dir, iterations, resolution, strategy):
     os.makedirs(model_dir, exist_ok=True)
 
     from gsplat_trainer import train as gsplat_train
+
     gsplat_train(
         colmap_dir=colmap_dir,
         model_dir=model_dir,
@@ -514,9 +518,12 @@ def _train_original(colmap_dir, model_dir, iterations, resolution):
     cmd = [
         python_path,
         os.path.join(gs_path, "train.py"),
-        "-s", colmap_dir,
-        "-m", model_dir,
-        "--iterations", str(iterations),
+        "-s",
+        colmap_dir,
+        "-m",
+        model_dir,
+        "--iterations",
+        str(iterations),
     ]
 
     if resolution > 0:
@@ -533,7 +540,7 @@ def _train_original(colmap_dir, model_dir, iterations, resolution):
     )
 
     for line in process.stdout:
-        print(line, end='')
+        print(line, end="")
 
     process.wait()
 
@@ -594,12 +601,22 @@ def process_pointcloud_to_3dgs(
     colmap_dir = convert_to_colmap_format(da3_output, output_dir, force=force)
 
     # Train 3DGS
-    model_dir = train_gaussian_splatting(colmap_dir, output_dir, iterations=iterations, resolution=resolution, force=force, backend=backend, strategy=strategy)
+    model_dir = train_gaussian_splatting(
+        colmap_dir,
+        output_dir,
+        iterations=iterations,
+        resolution=resolution,
+        force=force,
+        backend=backend,
+        strategy=strategy,
+    )
 
     # Find final PLY
     final_ply = None
     if model_dir:
-        final_ply = os.path.join(model_dir, "point_cloud", f"iteration_{iterations}", "point_cloud.ply")
+        final_ply = os.path.join(
+            model_dir, "point_cloud", f"iteration_{iterations}", "point_cloud.ply"
+        )
         if not os.path.exists(final_ply):
             # Try to find any iteration
             ply_pattern = os.path.join(model_dir, "point_cloud", "iteration_*", "point_cloud.ply")
@@ -639,61 +656,44 @@ Examples:
 
 Environment Variables:
     GAUSSIAN_SPLATTING_PATH: Path to gaussian-splatting repository
-        """
+        """,
     )
+    parser.add_argument("--pointcloud", "-p", required=True, help="Path to combined_pcd.ply")
+    parser.add_argument("--poses", required=True, help="Path to camera_poses.txt")
+    parser.add_argument("--intrinsics", required=True, help="Path to intrinsic.txt")
+    parser.add_argument("--images-dir", required=True, help="Directory containing input images")
     parser.add_argument(
-        "--pointcloud", "-p",
-        required=True,
-        help="Path to combined_pcd.ply"
-    )
-    parser.add_argument(
-        "--poses",
-        required=True,
-        help="Path to camera_poses.txt"
-    )
-    parser.add_argument(
-        "--intrinsics",
-        required=True,
-        help="Path to intrinsic.txt"
-    )
-    parser.add_argument(
-        "--images-dir",
-        required=True,
-        help="Directory containing input images"
-    )
-    parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default=None,
-        help="Output directory (default: {pointcloud_parent}/3dgs/)"
+        help="Output directory (default: {pointcloud_parent}/3dgs/)",
     )
     parser.add_argument(
         "--iterations",
         type=int,
         default=30000,
-        help="Number of training iterations (default: 30000)"
+        help="Number of training iterations (default: 30000)",
     )
     parser.add_argument(
         "--resolution",
         type=int,
         default=-1,
-        help="Image resolution for training (-1 for original, or target width like 512 for lower memory)"
+        help="Image resolution for training (-1 for original, or target width like 512 for lower memory)",
     )
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force reprocessing even if outputs exist"
+        "--force", action="store_true", help="Force reprocessing even if outputs exist"
     )
     parser.add_argument(
         "--gs-backend",
         choices=["gsplat", "original"],
         default="gsplat",
-        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)"
+        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)",
     )
     parser.add_argument(
         "--gs-strategy",
         choices=["mcmc", "default"],
         default="mcmc",
-        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)"
+        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)",
     )
 
     args = parser.parse_args()
@@ -713,9 +713,9 @@ Environment Variables:
 
     print(f"\nOutputs:")
     print(f"  COLMAP data: {result['colmap_dir']}")
-    if result['model_dir']:
+    if result["model_dir"]:
         print(f"  Model: {result['model_dir']}")
-    if result['final_ply']:
+    if result["final_ply"]:
         print(f"  Final PLY: {result['final_ply']}")
 
 

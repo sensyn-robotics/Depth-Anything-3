@@ -67,9 +67,7 @@ def read_cameras_binary(path: str) -> dict[int, Camera]:
             width = struct.unpack("<Q", f.read(8))[0]
             height = struct.unpack("<Q", f.read(8))[0]
             model = CAMERA_MODELS[model_id]
-            params = np.array(
-                struct.unpack(f"<{model.num_params}d", f.read(8 * model.num_params))
-            )
+            params = np.array(struct.unpack(f"<{model.num_params}d", f.read(8 * model.num_params)))
             cameras[cam_id] = Camera(cam_id, model.model_name, width, height, params)
     return cameras
 
@@ -119,44 +117,49 @@ def read_points3d_binary(path: str) -> tuple[np.ndarray, np.ndarray]:
 # Quaternion / rotation helpers
 # ---------------------------------------------------------------------------
 
+
 def qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
     """COLMAP quaternion (w,x,y,z) -> 3x3 rotation matrix."""
     w, x, y, z = qvec
-    return np.array([
-        [1 - 2*y*y - 2*z*z, 2*x*y - 2*w*z,     2*x*z + 2*w*y],
-        [2*x*y + 2*w*z,     1 - 2*x*x - 2*z*z, 2*y*z - 2*w*x],
-        [2*x*z - 2*w*y,     2*y*z + 2*w*x,     1 - 2*x*x - 2*y*y],
-    ])
+    return np.array(
+        [
+            [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
+            [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
+            [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
 # SSIM
 # ---------------------------------------------------------------------------
 
+
 def _fspecial_gauss(size: int, sigma: float, device):
     coords = torch.arange(size, dtype=torch.float32, device=device) - (size - 1) / 2.0
-    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g = torch.exp(-(coords**2) / (2 * sigma**2))
     g = torch.outer(g, g)
     return (g / g.sum()).unsqueeze(0).unsqueeze(0)
 
 
 def ssim(img1, img2, window_size=11):
     """Compute SSIM between two [B,C,H,W] tensors."""
-    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    C1, C2 = 0.01**2, 0.03**2
     ch = img1.shape[1]
     window = _fspecial_gauss(window_size, 1.5, img1.device).expand(ch, -1, -1, -1)
     pad = window_size // 2
 
     mu1 = F.conv2d(img1, window, padding=pad, groups=ch)
     mu2 = F.conv2d(img2, window, padding=pad, groups=ch)
-    mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+    mu1_sq, mu2_sq, mu1_mu2 = mu1**2, mu2**2, mu1 * mu2
 
     sigma1_sq = F.conv2d(img1 * img1, window, padding=pad, groups=ch) - mu1_sq
     sigma2_sq = F.conv2d(img2 * img2, window, padding=pad, groups=ch) - mu2_sq
     sigma12 = F.conv2d(img1 * img2, window, padding=pad, groups=ch) - mu1_mu2
 
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / \
-               ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
+        (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    )
     return ssim_map.mean()
 
 
@@ -164,24 +167,23 @@ def ssim(img1, img2, window_size=11):
 # PLY writer (standard 3DGS format)
 # ---------------------------------------------------------------------------
 
-def save_ply(path: str, means: np.ndarray, scales: np.ndarray,
-             rotations: np.ndarray, opacities: np.ndarray, sh_coeffs: np.ndarray):
+
+def save_ply(
+    path: str,
+    means: np.ndarray,
+    scales: np.ndarray,
+    rotations: np.ndarray,
+    opacities: np.ndarray,
+    sh_coeffs: np.ndarray,
+):
     """Save Gaussians to PLY in standard 3DGS format."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     n = means.shape[0]
     sh_dim = sh_coeffs.shape[1]
 
-    # Build dtype
-    attrs = [("x", "f4"), ("y", "f4"), ("z", "f4"),
-             ("nx", "f4"), ("ny", "f4"), ("nz", "f4")]
-    for i in range(sh_dim):
-        attrs.append((f"f_rest_{i}" if i > 0 else "f_dc_0", "f4"))
-    # Actually, standard format uses f_dc_0..2 then f_rest_0..
-    # Let's follow the convention properly:
-    attrs = [("x", "f4"), ("y", "f4"), ("z", "f4"),
-             ("nx", "f4"), ("ny", "f4"), ("nz", "f4")]
-    # DC: 3 channels
+    # Build dtype (standard 3DGS PLY format: f_dc_0..2 then f_rest_0..)
+    attrs = [("x", "f4"), ("y", "f4"), ("z", "f4"), ("nx", "f4"), ("ny", "f4"), ("nz", "f4")]
     for i in range(3):
         attrs.append((f"f_dc_{i}", "f4"))
     # Rest of SH
@@ -216,11 +218,7 @@ def save_ply(path: str, means: np.ndarray, scales: np.ndarray,
 
     # Write PLY
     with open(path, "wb") as f:
-        header = (
-            "ply\n"
-            "format binary_little_endian 1.0\n"
-            f"element vertex {n}\n"
-        )
+        header = "ply\n" "format binary_little_endian 1.0\n" f"element vertex {n}\n"
         for name, fmt in attrs:
             header += f"property float {name}\n"
         header += "end_header\n"
@@ -233,6 +231,7 @@ def save_ply(path: str, means: np.ndarray, scales: np.ndarray,
 # ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
+
 
 def train(
     colmap_dir: str,
@@ -309,16 +308,19 @@ def train(
         # Build intrinsics
         c = cameras[img_meta.camera_id]
         fx, fy, cx, cy = c.params[:4]
-        K = torch.tensor([
-            [fx * scale_factor, 0, cx * scale_factor],
-            [0, fy * scale_factor, cy * scale_factor],
-            [0, 0, 1],
-        ], dtype=torch.float32)
+        K = torch.tensor(
+            [
+                [fx * scale_factor, 0, cx * scale_factor],
+                [0, fy * scale_factor, cy * scale_factor],
+                [0, 0, 1],
+            ],
+            dtype=torch.float32,
+        )
         Ks.append(K)
 
-    gt_images = torch.stack(gt_images).to(device)       # [N, H, W, 3]
-    viewmats = torch.stack(viewmats).to(device)          # [N, 4, 4]
-    Ks = torch.stack(Ks).to(device)                      # [N, 3, 3]
+    gt_images = torch.stack(gt_images).to(device)  # [N, H, W, 3]
+    viewmats = torch.stack(viewmats).to(device)  # [N, 4, 4]
+    Ks = torch.stack(Ks).to(device)  # [N, 3, 3]
     num_views = len(gt_images)
 
     print(f"  Loaded {num_views} training views")
@@ -336,6 +338,7 @@ def train(
 
     # Compute initial scales from local point density
     from scipy.spatial import KDTree
+
     tree = KDTree(points_xyz)
     dists, _ = tree.query(points_xyz, k=4)  # k=4: self + 3 neighbors
     avg_dist = np.mean(dists[:, 1:], axis=1)  # exclude self
@@ -355,11 +358,13 @@ def train(
     # ---- Strategy ----
     if strategy == "mcmc":
         from gsplat.strategy import MCMCStrategy
+
         strat = MCMCStrategy(verbose=True)
         # MCMC needs cap_max
         strat_state = strat.initialize_state(scene_scale=1.0)
     else:
         from gsplat.strategy import DefaultStrategy
+
         strat = DefaultStrategy(verbose=True)
         strat_state = strat.initialize_state()
 
@@ -384,8 +389,7 @@ def train(
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lr_lambda=[lr_lambda_means, lambda s: 1.0, lambda s: 1.0,
-                   lambda s: 1.0, lambda s: 1.0],
+        lr_lambda=[lr_lambda_means, lambda s: 1.0, lambda s: 1.0, lambda s: 1.0, lambda s: 1.0],
     )
 
     # Checkpoint iterations
@@ -402,9 +406,9 @@ def train(
     for step in range(1, iterations + 1):
         # Random view
         idx = torch.randint(0, num_views, (1,)).item()
-        gt_img = gt_images[idx]          # [H, W, 3]
-        viewmat = viewmats[idx]          # [4, 4]
-        K = Ks[idx]                      # [3, 3]
+        gt_img = gt_images[idx]  # [H, W, 3]
+        viewmat = viewmats[idx]  # [4, 4]
+        K = Ks[idx]  # [3, 3]
 
         scales = torch.exp(log_scales)
         opacities = torch.sigmoid(opacities_logit)
@@ -469,9 +473,11 @@ def train(
         # Log
         if step % 500 == 0 or step == 1:
             n_gs = means.shape[0]
-            print(f"  [Step {step:>6d}/{iterations}] loss={loss.item():.4f} "
-                  f"l1={l1_loss.item():.4f} ssim={ssim_val.item():.4f} "
-                  f"n_gaussians={n_gs}")
+            print(
+                f"  [Step {step:>6d}/{iterations}] loss={loss.item():.4f} "
+                f"l1={l1_loss.item():.4f} ssim={ssim_val.item():.4f} "
+                f"n_gaussians={n_gs}"
+            )
 
         # Save checkpoint
         if step in save_iters:
@@ -498,6 +504,7 @@ def _save_checkpoint(ply_path, means, log_scales, quats, opacities_logit, sh_coe
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Train 3DGS with gsplat")
     parser.add_argument("--colmap-dir", required=True, help="COLMAP directory")
     parser.add_argument("--model-dir", required=True, help="Output model directory")

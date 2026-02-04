@@ -194,6 +194,7 @@ def process_equirect_to_3dgs(
             temp_dirs = ["depth", "conf", "chunk_*"]
             for pattern in temp_dirs:
                 import glob
+
                 for path in glob.glob(os.path.join(streaming_output, pattern)):
                     if os.path.isdir(path):
                         shutil.rmtree(path)
@@ -269,107 +270,73 @@ Examples:
         --fps 1.0 --cube-size 1024 \\
         --chunk-size 60 --overlap 30 \\
         --train-3dgs --train-iterations 30000
-        """
+        """,
     )
     parser.add_argument(
-        "--input", "-i",
-        required=True,
-        help="Input equirectangular video file (MP4)"
+        "--input", "-i", required=True, help="Input equirectangular video file (MP4)"
     )
     parser.add_argument(
-        "--output", "-o",
-        default=None,
-        help="Output directory (default: ./output/{video_name}/)"
+        "--output", "-o", default=None, help="Output directory (default: ./output/{video_name}/)"
     )
     parser.add_argument(
-        "--fps",
-        type=float,
-        default=1.0,
-        help="Frame extraction rate (default: 1.0)"
+        "--fps", type=float, default=1.0, help="Frame extraction rate (default: 1.0)"
     )
     parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Maximum frames to extract (for testing)"
+        "--max-frames", type=int, default=None, help="Maximum frames to extract (for testing)"
     )
     parser.add_argument(
         "--faces",
         default="front,back,left,right,up",
-        help="Cubemap faces to process (default: excludes 'down')"
+        help="Cubemap faces to process (default: excludes 'down')",
     )
     parser.add_argument(
-        "--cube-size",
-        type=int,
-        default=1024,
-        help="Cubemap face size in pixels (default: 1024)"
+        "--cube-size", type=int, default=1024, help="Cubemap face size in pixels (default: 1024)"
     )
     parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=60,
-        help="DA3-streaming chunk size (default: 60)"
+        "--chunk-size", type=int, default=60, help="DA3-streaming chunk size (default: 60)"
     )
     parser.add_argument(
-        "--overlap",
-        type=int,
-        default=30,
-        help="Overlap between chunks (default: 30)"
+        "--overlap", type=int, default=30, help="Overlap between chunks (default: 30)"
     )
-    parser.add_argument(
-        "--no-loop",
-        action="store_true",
-        help="Disable loop closure detection"
-    )
+    parser.add_argument("--no-loop", action="store_true", help="Disable loop closure detection")
     parser.add_argument(
         "--salad-batch-size",
         type=int,
         default=32,
-        help="SALAD loop closure batch size (default: 32)"
+        help="SALAD loop closure batch size (default: 32)",
     )
     parser.add_argument(
-        "--process-res",
-        type=int,
-        default=504,
-        help="DA3 processing resolution (default: 504)"
+        "--process-res", type=int, default=504, help="DA3 processing resolution (default: 504)"
     )
     parser.add_argument(
-        "--low-memory",
-        action="store_true",
-        help="Enable low-memory mode for 8-12GB VRAM GPUs"
+        "--low-memory", action="store_true", help="Enable low-memory mode for 8-12GB VRAM GPUs"
     )
     parser.add_argument(
         "--train-3dgs",
         action="store_true",
-        help="Train 3D Gaussian Splatting model after point cloud generation"
+        help="Train 3D Gaussian Splatting model after point cloud generation",
     )
     parser.add_argument(
         "--train-iterations",
         type=int,
         default=30000,
-        help="Number of 3DGS training iterations (default: 30000)"
+        help="Number of 3DGS training iterations (default: 30000)",
     )
+    parser.add_argument("--keep-temp", action="store_true", help="Keep all intermediate files")
     parser.add_argument(
-        "--keep-temp",
-        action="store_true",
-        help="Keep all intermediate files"
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force reprocessing all stages even if outputs exist"
+        "--force", action="store_true", help="Force reprocessing all stages even if outputs exist"
     )
     parser.add_argument(
         "--gs-backend",
         choices=["gsplat", "original"],
         default="gsplat",
-        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)"
+        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)",
     )
     parser.add_argument(
         "--gs-strategy",
         choices=["mcmc", "default"],
         default="mcmc",
-        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)"
+        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)",
     )
 
     args = parser.parse_args()
