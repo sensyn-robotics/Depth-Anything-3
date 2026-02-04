@@ -43,6 +43,7 @@ def process_video(
     fps: float,
     low_memory: bool,
     iterations: int,
+    resolution: int,
     force: bool,
 ) -> dict:
     """Process single video through full pipeline.
@@ -53,6 +54,7 @@ def process_video(
         fps: Frame extraction rate
         low_memory: Enable low-memory mode for 8-12GB GPUs
         iterations: 3DGS training iterations
+        resolution: Image resolution for 3DGS training (-1 for original)
         force: Force reprocessing even if outputs exist
 
     Returns:
@@ -108,6 +110,7 @@ def process_video(
         images_dir=str(frames_dir),
         output_dir=str(gs_dir),
         iterations=iterations,
+        resolution=resolution,
         backend="gsplat",
         strategy="mcmc",
         force=force,
@@ -154,6 +157,12 @@ Examples:
         "--iterations", type=int, default=30000, help="3DGS training iterations (default: 30000)"
     )
     parser.add_argument(
+        "--resolution",
+        type=int,
+        default=-1,
+        help="3DGS training resolution (-1 for original, e.g. 512 or 1024 for lower memory)",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Force reprocessing even if outputs exist"
     )
 
@@ -168,6 +177,18 @@ Examples:
             print(f"Warning: {video} not found, skipping")
             continue
 
+        # Clear GPU memory before each video
+        try:
+            import torch
+            import gc
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+
         output_dir = base_output / video_path.stem
         print(f"\n{'=' * 60}")
         print(f"Processing: {video_path.name}")
@@ -175,12 +196,18 @@ Examples:
         print(f"{'=' * 60}")
 
         try:
+            # Use lower resolution in low-memory mode if not specified
+            resolution = args.resolution
+            if args.low_memory and resolution == -1:
+                resolution = 1024  # Default to 1024 in low-memory mode
+
             result = process_video(
                 str(video_path),
                 output_dir,
                 args.fps,
                 args.low_memory,
                 args.iterations,
+                resolution,
                 args.force,
             )
 
@@ -194,6 +221,18 @@ Examples:
         except Exception as e:
             print(f"\n[ERROR] Failed to process {video_path.name}: {e}")
             results.append((video_path.name, None))
+        finally:
+            # Clear GPU memory after each video
+            try:
+                import torch
+                import gc
+
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception:
+                pass
 
     # Summary
     print(f"\n{'=' * 60}")
