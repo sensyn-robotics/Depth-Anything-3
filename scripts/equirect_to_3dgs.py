@@ -47,6 +47,8 @@ def process_equirect_to_3dgs(
     train_iterations: int = 30000,
     keep_temp: bool = True,
     force: bool = False,
+    gs_backend: str = "gsplat",
+    gs_strategy: str = "mcmc",
 ) -> dict:
     """
     Complete pipeline from equirectangular video to 3DGS.
@@ -170,6 +172,8 @@ def process_equirect_to_3dgs(
             output_dir=gs_dir,
             iterations=train_iterations,
             force=force,
+            backend=gs_backend,
+            strategy=gs_strategy,
         )
 
         results["colmap_dir"] = gs_result["colmap_dir"]
@@ -212,6 +216,8 @@ def process_equirect_to_3dgs(
         "process_res": process_res,
         "train_3dgs": train_3dgs,
         "train_iterations": train_iterations if train_3dgs else None,
+        "gs_backend": gs_backend if train_3dgs else None,
+        "gs_strategy": gs_strategy if train_3dgs else None,
     }
 
     metadata_path = os.path.join(output_dir, "metadata.json")
@@ -353,6 +359,18 @@ Examples:
         action="store_true",
         help="Force reprocessing all stages even if outputs exist"
     )
+    parser.add_argument(
+        "--gs-backend",
+        choices=["gsplat", "original"],
+        default="gsplat",
+        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)"
+    )
+    parser.add_argument(
+        "--gs-strategy",
+        choices=["mcmc", "default"],
+        default="mcmc",
+        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)"
+    )
 
     args = parser.parse_args()
 
@@ -394,6 +412,8 @@ Examples:
         train_iterations=args.train_iterations,
         keep_temp=args.keep_temp,
         force=args.force,
+        gs_backend=args.gs_backend,
+        gs_strategy=args.gs_strategy,
     )
 
 

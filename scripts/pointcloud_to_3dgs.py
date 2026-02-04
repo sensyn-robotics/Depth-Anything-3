@@ -431,6 +431,8 @@ def train_gaussian_splatting(
     iterations: int = 30000,
     resolution: int = -1,
     force: bool = False,
+    backend: str = "gsplat",
+    strategy: str = "mcmc",
 ) -> str:
     """Train 3D Gaussian Splatting model.
 
@@ -440,6 +442,8 @@ def train_gaussian_splatting(
         iterations: Number of training iterations
         resolution: Image resolution for training (-1 for original, or target width like 512)
         force: Force retraining even if model exists
+        backend: "gsplat" (default) or "original" (external gaussian-splatting repo)
+        strategy: "mcmc" or "default" (ADC). Only used with gsplat backend.
 
     Returns:
         Path to trained model directory
@@ -456,21 +460,49 @@ def train_gaussian_splatting(
         print("Use --force to retrain")
         return model_dir
 
-    # Find gaussian-splatting
+    if backend == "gsplat":
+        return _train_gsplat(colmap_dir, model_dir, iterations, resolution, strategy)
+    else:
+        return _train_original(colmap_dir, model_dir, iterations, resolution)
+
+
+def _train_gsplat(colmap_dir, model_dir, iterations, resolution, strategy):
+    """Train using gsplat (no external repo needed)."""
+    print(f"\nTraining 3D Gaussian Splatting (gsplat backend)...")
+    print(f"  Iterations: {iterations}")
+    if resolution > 0:
+        print(f"  Resolution: {resolution}")
+
+    os.makedirs(model_dir, exist_ok=True)
+
+    from gsplat_trainer import train as gsplat_train
+    gsplat_train(
+        colmap_dir=colmap_dir,
+        model_dir=model_dir,
+        iterations=iterations,
+        resolution=resolution,
+        strategy=strategy,
+    )
+    return model_dir
+
+
+def _train_original(colmap_dir, model_dir, iterations, resolution):
+    """Train using the external gaussian-splatting repository."""
     gs_result = find_gaussian_splatting()
     if gs_result is None:
         print("\nWarning: gaussian-splatting not found!")
-        print("To train 3DGS, either:")
+        print("To train 3DGS with the original backend, either:")
         print("  1. Set GAUSSIAN_SPLATTING_PATH environment variable")
         print("  2. Clone to ~/gaussian-splatting")
-        print("  3. Install gsplat: pip install gsplat")
-        print("\nSkipping training. COLMAP data is ready for manual training:")
+        print("\nOr use the default gsplat backend (no external repo needed):")
+        print("  Remove --gs-backend original")
+        print(f"\nSkipping training. COLMAP data is ready for manual training:")
         print(f"  {colmap_dir}")
         return None
 
     gs_path, python_path = gs_result
 
-    print(f"\nTraining 3D Gaussian Splatting...")
+    print(f"\nTraining 3D Gaussian Splatting (original backend)...")
     print(f"  Using: {gs_path}")
     print(f"  Python: {python_path}")
     print(f"  Iterations: {iterations}")
@@ -479,7 +511,6 @@ def train_gaussian_splatting(
 
     os.makedirs(model_dir, exist_ok=True)
 
-    # Run training
     cmd = [
         python_path,
         os.path.join(gs_path, "train.py"),
@@ -521,6 +552,8 @@ def process_pointcloud_to_3dgs(
     iterations: int = 30000,
     resolution: int = -1,
     force: bool = False,
+    backend: str = "gsplat",
+    strategy: str = "mcmc",
 ) -> dict:
     """
     Complete pipeline from point cloud to trained 3DGS.
@@ -561,7 +594,7 @@ def process_pointcloud_to_3dgs(
     colmap_dir = convert_to_colmap_format(da3_output, output_dir, force=force)
 
     # Train 3DGS
-    model_dir = train_gaussian_splatting(colmap_dir, output_dir, iterations=iterations, resolution=resolution, force=force)
+    model_dir = train_gaussian_splatting(colmap_dir, output_dir, iterations=iterations, resolution=resolution, force=force, backend=backend, strategy=strategy)
 
     # Find final PLY
     final_ply = None
@@ -650,6 +683,18 @@ Environment Variables:
         action="store_true",
         help="Force reprocessing even if outputs exist"
     )
+    parser.add_argument(
+        "--gs-backend",
+        choices=["gsplat", "original"],
+        default="gsplat",
+        help="3DGS training backend: 'gsplat' (default, no external repo) or 'original' (external gaussian-splatting repo)"
+    )
+    parser.add_argument(
+        "--gs-strategy",
+        choices=["mcmc", "default"],
+        default="mcmc",
+        help="Densification strategy for gsplat backend: 'mcmc' (default) or 'default' (ADC)"
+    )
 
     args = parser.parse_args()
 
@@ -662,6 +707,8 @@ Environment Variables:
         iterations=args.iterations,
         resolution=args.resolution,
         force=args.force,
+        backend=args.gs_backend,
+        strategy=args.gs_strategy,
     )
 
     print(f"\nOutputs:")
