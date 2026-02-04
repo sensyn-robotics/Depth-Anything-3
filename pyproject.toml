@@ -39,11 +39,18 @@ dependencies = [
     "moviepy==1.0.3",
     "typer>=0.9.0",
     "pycolmap",
+    "pypose>=0.7.5",
+    "faiss-cpu>=1.13.2",
+    "pandas>=2.3.3",
+    "prettytable>=3.17.0",
+    "numba>=0.63.1",
 ]
 
 [project.optional-dependencies]
 app = ["gradio>=5", "pillow>=9.0"] # requires that python3>=3.10
-gs = ["gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70"]
+gs = [
+    "gsplat>=1.5.0",
+]
 all = ["depth-anything-3[app,gs]"]
 
 

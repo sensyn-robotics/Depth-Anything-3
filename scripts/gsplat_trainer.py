@@ -331,10 +331,12 @@ def train(
     means.requires_grad_(True)
 
     # RGB to SH DC coefficient: color = SH_C0 * sh_dc + 0.5
+    # gsplat expects colors as [N, K, 3] where K = (sh_degree+1)^2
+    # For sh_degree=0, K=1, so shape is [N, 1, 3]
     SH_C0 = 0.28209479177387814
     rgb_normalized = torch.from_numpy(points_rgb).float().to(device) / 255.0
     sh_dc = (rgb_normalized - 0.5) / SH_C0  # [N, 3]
-    sh_coeffs = sh_dc.contiguous().requires_grad_(True)
+    sh_coeffs = sh_dc.unsqueeze(1).contiguous().requires_grad_(True)  # [N, 1, 3]
 
     # Compute initial scales from local point density
     from scipy.spatial import KDTree
@@ -360,23 +362,39 @@ def train(
         from gsplat.strategy import MCMCStrategy
 
         strat = MCMCStrategy(verbose=True)
-        # MCMC needs cap_max
-        strat_state = strat.initialize_state(scene_scale=1.0)
+        strat_state = strat.initialize_state()
     else:
         from gsplat.strategy import DefaultStrategy
 
         strat = DefaultStrategy(verbose=True)
         strat_state = strat.initialize_state()
 
-    # ---- Optimizer ----
-    params = [
-        {"params": [means], "lr": 1.6e-4, "name": "means"},
-        {"params": [sh_coeffs], "lr": 2.5e-3, "name": "sh_coeffs"},
-        {"params": [log_scales], "lr": 5e-3, "name": "log_scales"},
-        {"params": [quats], "lr": 1e-3, "name": "quats"},
-        {"params": [opacities_logit], "lr": 5e-2, "name": "opacities_logit"},
-    ]
-    optimizer = torch.optim.Adam(params, eps=1e-15)
+    # ---- Optimizer (new gsplat API uses dicts) ----
+    # gsplat expects keys: means, scales, quats, opacities, sh_coeffs
+    # We store log_scales and opacities_logit internally but expose scales/opacities
+    params_dict = {
+        "means": means,
+        "scales": log_scales,  # gsplat strategy will handle this as scales
+        "quats": quats,
+        "opacities": opacities_logit,  # gsplat strategy will handle this as opacities
+        "sh_coeffs": sh_coeffs,
+    }
+
+    # Optimizer param groups (for torch.optim.Adam)
+    lr_means = 1.6e-4
+    optimizer_means = torch.optim.Adam([{"params": [means], "lr": lr_means}], eps=1e-15)
+    optimizer_scales = torch.optim.Adam([{"params": [log_scales], "lr": 5e-3}], eps=1e-15)
+    optimizer_quats = torch.optim.Adam([{"params": [quats], "lr": 1e-3}], eps=1e-15)
+    optimizer_opacities = torch.optim.Adam([{"params": [opacities_logit], "lr": 5e-2}], eps=1e-15)
+    optimizer_sh = torch.optim.Adam([{"params": [sh_coeffs], "lr": 2.5e-3}], eps=1e-15)
+
+    optimizers_dict = {
+        "means": optimizer_means,
+        "scales": optimizer_scales,
+        "quats": optimizer_quats,
+        "opacities": optimizer_opacities,
+        "sh_coeffs": optimizer_sh,
+    }
 
     # Learning rate schedule for means (same as original 3DGS)
     def lr_lambda_means(step):
@@ -387,10 +405,7 @@ def train(
         lr = math.exp(math.log(lr_init) * (1 - t) + math.log(lr_final) * t)
         return lr / lr_init
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=[lr_lambda_means, lambda s: 1.0, lambda s: 1.0, lambda s: 1.0, lambda s: 1.0],
-    )
+    scheduler_means = torch.optim.lr_scheduler.LambdaLR(optimizer_means, lr_lambda=lr_lambda_means)
 
     # Checkpoint iterations
     save_iters = set()
@@ -442,33 +457,39 @@ def train(
         with torch.no_grad():
             # Strategy step (densification / pruning)
             strat.step_pre_backward(
-                params=params,
-                optimizers=[optimizer],
+                params=params_dict,
+                optimizers=optimizers_dict,
                 state=strat_state,
                 step=step,
                 info=info,
             )
 
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-        scheduler.step()
+        # Step all optimizers
+        for opt in optimizers_dict.values():
+            opt.step()
+            opt.zero_grad(set_to_none=True)
+        scheduler_means.step()
+
+        # Get current learning rate for step_post_backward
+        current_lr = optimizer_means.param_groups[0]["lr"]
 
         # Strategy post-step
         with torch.no_grad():
             strat.step_post_backward(
-                params=params,
-                optimizers=[optimizer],
+                params=params_dict,
+                optimizers=optimizers_dict,
                 state=strat_state,
                 step=step,
                 info=info,
+                lr=current_lr,
             )
 
         # Refresh references after potential densification
-        means = params[0]["params"][0]
-        sh_coeffs = params[1]["params"][0]
-        log_scales = params[2]["params"][0]
-        quats = params[3]["params"][0]
-        opacities_logit = params[4]["params"][0]
+        means = params_dict["means"]
+        sh_coeffs = params_dict["sh_coeffs"]
+        log_scales = params_dict["scales"]
+        quats = params_dict["quats"]
+        opacities_logit = params_dict["opacities"]
 
         # Log
         if step % 500 == 0 or step == 1:
@@ -492,13 +513,15 @@ def train(
 
 def _save_checkpoint(ply_path, means, log_scales, quats, opacities_logit, sh_coeffs):
     with torch.no_grad():
+        # sh_coeffs is [N, K, 3], flatten to [N, K*3] for save_ply
+        sh_flat = sh_coeffs.reshape(sh_coeffs.shape[0], -1)
         save_ply(
             ply_path,
             means=means.detach().cpu().numpy(),
             scales=torch.exp(log_scales).detach().cpu().numpy(),
             rotations=(quats / quats.norm(dim=-1, keepdim=True)).detach().cpu().numpy(),
             opacities=torch.sigmoid(opacities_logit).detach().cpu().numpy().reshape(-1, 1),
-            sh_coeffs=sh_coeffs.detach().cpu().numpy(),
+            sh_coeffs=sh_flat.detach().cpu().numpy(),
         )
 
 
