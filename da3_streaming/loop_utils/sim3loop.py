@@ -224,7 +224,8 @@ class Sim3LoopOptimizer:
         if max_iterations is None:
             max_iterations = self.config["Loop"]["SIM3_Optimizer"]["max_iterations"]
         if lambda_init is None:
-            lambda_init = eval(self.config["Loop"]["SIM3_Optimizer"]["lambda_init"])
+            val = self.config["Loop"]["SIM3_Optimizer"]["lambda_init"]
+            lambda_init = float(val) if not isinstance(val, str) else eval(val)
 
         input_poses = self.sequential_to_absolute_poses(sequential_transforms)
 

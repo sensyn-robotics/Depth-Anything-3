@@ -325,6 +325,23 @@ def train(
 
     print(f"  Loaded {num_views} training views")
 
+    # ---- Compute scene extent and auto-scale learning rates ----
+    # Original 3DGS assumes scene extent ~1-10. For larger scenes, we need lower LRs.
+    scene_min = points_xyz.min(axis=0)
+    scene_max = points_xyz.max(axis=0)
+    scene_extent = np.linalg.norm(scene_max - scene_min)
+
+    # Reference extent (original 3DGS default assumption)
+    reference_extent = 10.0
+
+    # Scale factor: larger scene = lower learning rates
+    # Use sqrt to avoid being too aggressive for very large scenes
+    lr_scale = reference_extent / max(scene_extent, reference_extent)
+    lr_scale = max(lr_scale, 0.01)  # Clamp to avoid extremely small LRs
+
+    print(f"  Scene extent: {scene_extent:.2f} (reference: {reference_extent})")
+    print(f"  Learning rate scale factor: {lr_scale:.4f}")
+
     # ---- Initialize Gaussians ----
     N = len(points_xyz)
     means = torch.from_numpy(points_xyz).float().to(device)
@@ -381,12 +398,20 @@ def train(
     }
 
     # Optimizer param groups (for torch.optim.Adam)
-    lr_means = 1.6e-4
+    # Learning rates are auto-scaled based on scene extent
+    lr_means = 1.6e-4 * lr_scale
+    lr_scales = 5e-3 * lr_scale
+    lr_quats = 1e-3  # Rotation LR doesn't need scaling
+    lr_opacities = 5e-2  # Opacity LR doesn't need scaling
+    lr_sh = 2.5e-3  # SH LR doesn't need scaling
+
+    print(f"  Adjusted LRs: means={lr_means:.2e}, scales={lr_scales:.2e}")
+
     optimizer_means = torch.optim.Adam([{"params": [means], "lr": lr_means}], eps=1e-15)
-    optimizer_scales = torch.optim.Adam([{"params": [log_scales], "lr": 5e-3}], eps=1e-15)
-    optimizer_quats = torch.optim.Adam([{"params": [quats], "lr": 1e-3}], eps=1e-15)
-    optimizer_opacities = torch.optim.Adam([{"params": [opacities_logit], "lr": 5e-2}], eps=1e-15)
-    optimizer_sh = torch.optim.Adam([{"params": [sh_coeffs], "lr": 2.5e-3}], eps=1e-15)
+    optimizer_scales = torch.optim.Adam([{"params": [log_scales], "lr": lr_scales}], eps=1e-15)
+    optimizer_quats = torch.optim.Adam([{"params": [quats], "lr": lr_quats}], eps=1e-15)
+    optimizer_opacities = torch.optim.Adam([{"params": [opacities_logit], "lr": lr_opacities}], eps=1e-15)
+    optimizer_sh = torch.optim.Adam([{"params": [sh_coeffs], "lr": lr_sh}], eps=1e-15)
 
     optimizers_dict = {
         "means": optimizer_means,
@@ -396,14 +421,15 @@ def train(
         "sh_coeffs": optimizer_sh,
     }
 
-    # Learning rate schedule for means (same as original 3DGS)
+    # Learning rate schedule for means (same as original 3DGS, with scale factor)
+    lr_means_init = 1.6e-4 * lr_scale
+    lr_means_final = 1.6e-6 * lr_scale
+
     def lr_lambda_means(step):
-        lr_init = 1.6e-4
-        lr_final = 1.6e-6
         max_steps = iterations
         t = min(step / max_steps, 1.0)
-        lr = math.exp(math.log(lr_init) * (1 - t) + math.log(lr_final) * t)
-        return lr / lr_init
+        lr = math.exp(math.log(lr_means_init) * (1 - t) + math.log(lr_means_final) * t)
+        return lr / lr_means_init
 
     scheduler_means = torch.optim.lr_scheduler.LambdaLR(optimizer_means, lr_lambda=lr_lambda_means)
 

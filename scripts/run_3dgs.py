@@ -174,8 +174,8 @@ def process_videos_unified(
     # Memory-optimized settings with loop closure ENABLED
     # Key insight: loop closure prevents drift accumulation across chunks
     if low_memory:
-        chunk_size = 20  # Larger chunks = fewer alignments = less drift
-        overlap = 10  # More overlap = better alignment
+        chunk_size = 10  # Smaller chunks for 12GB GPU
+        overlap = 5  # Proportional overlap
         salad_batch = 4  # Smaller batch for SALAD to fit in VRAM
         loop_en = True  # CRITICAL: Enable loop closure even in low-memory mode
         proc_res = 336
