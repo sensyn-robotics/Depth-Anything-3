@@ -29,6 +29,10 @@ input_images*/
 # OS files
 .DS_Store
 
+# Large binary files
+data/
+**/weights/
+
 .vscode
 src/debug_main.py
 temp*.png
